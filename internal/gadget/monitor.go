@@ -28,12 +28,14 @@ type Monitor struct {
 	events   chan UDCEvent
 	last     string
 	interval time.Duration
+	udcName  string
 }
 
-func NewMonitor() *Monitor {
+func NewMonitor(udcName string) *Monitor {
 	return &Monitor{
 		events:   make(chan UDCEvent, 4),
 		interval: 500 * time.Millisecond,
+		udcName:  udcName,
 	}
 }
 
@@ -44,14 +46,14 @@ func (m *Monitor) Events() <-chan UDCEvent {
 func (m *Monitor) Start(ctx context.Context) {
 	go func() {
 		// Initialize last state without emitting an event
-		m.last = State()
+		m.last = State(m.udcName)
 
 		for {
 			select {
 			case <-ctx.Done():
 				return
 			case <-time.After(m.interval):
-				current := State()
+				current := State(m.udcName)
 
 				// Debounce — only act on stable state change
 				if current == m.last {

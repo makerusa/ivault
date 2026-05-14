@@ -1,6 +1,7 @@
 package ingest
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"io"
 	"os"
@@ -8,17 +9,18 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/umarsear/ivault/internal/db"
+	"github.com/makerusa/ivault/internal/db"
 )
 
-const (
-	ImagePath   = "/nvme/usb_disk.img"
-	MountPoint  = "/nvme/ingest"
-	UploadQueue = "/nvme/upload_queue"
-)
+// IngestConfig holds the filesystem paths used during ingest.
+type IngestConfig struct {
+	ImagePath   string // e.g. /nvme/usb_disk.img
+	MountPoint  string // e.g. /nvme/ingest
+	UploadQueue string // e.g. /nvme/upload_queue
+}
 
-func Mount() error {
-	cmd := exec.Command("mount", "-o", "loop", ImagePath, MountPoint)
+func Mount(cfg IngestConfig) error {
+	cmd := exec.Command("mount", "-o", "loop", cfg.ImagePath, cfg.MountPoint)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("mount failed: %w — %s", err, string(out))
@@ -26,14 +28,9 @@ func Mount() error {
 	return nil
 }
 
-func Unmount() error {
-	cmd := exec.Command("umount", MountPoint)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		// Ignore "not mounted" errors
-		return nil
-	}
-	_ = out
+func Unmount(cfg IngestConfig) error {
+	cmd := exec.Command("umount", cfg.MountPoint)
+	cmd.CombinedOutput() // ignore "not mounted" errors
 	return nil
 }
 
@@ -44,10 +41,10 @@ type IngestResult struct {
 	Skipped     int
 }
 
-func Run(database *db.DB, sessionID int64) (*IngestResult, error) {
+func Run(cfg IngestConfig, database *db.DB, sessionID int64) (*IngestResult, error) {
 	result := &IngestResult{}
 
-	entries, err := os.ReadDir(MountPoint)
+	entries, err := os.ReadDir(cfg.MountPoint)
 	if err != nil {
 		return nil, fmt.Errorf("read mount point: %w", err)
 	}
@@ -66,14 +63,15 @@ func Run(database *db.DB, sessionID int64) (*IngestResult, error) {
 
 		result.FilesFound++
 
-		src := filepath.Join(MountPoint, name)
+		src := filepath.Join(cfg.MountPoint, name)
 
 		info, err := entry.Info()
 		if err != nil {
 			continue
 		}
 
-		// Checksum source
+		// Compute source checksum. This read is unavoidable because we need
+		// the hash before the DB dedup lookup.
 		checksum, err := checksumFile(src)
 		if err != nil {
 			return result, fmt.Errorf("checksum %s: %w", name, err)
@@ -101,17 +99,11 @@ func Run(database *db.DB, sessionID int64) (*IngestResult, error) {
 			return result, fmt.Errorf("db insert %s: %w", name, err)
 		}
 
-		// Copy to upload queue
-		dst := filepath.Join(UploadQueue, name)
-		if err := copyFile(src, dst); err != nil {
+		// Copy to upload queue, verifying the destination checksum during the
+		// copy itself using io.TeeReader — avoids a third full read of the file.
+		dst := filepath.Join(cfg.UploadQueue, name)
+		if err := copyAndVerify(src, dst, checksum); err != nil {
 			return result, fmt.Errorf("copy %s: %w", name, err)
-		}
-
-		// Verify copy checksum
-		dstChecksum, err := checksumFile(dst)
-		if err != nil || dstChecksum != checksum {
-			os.Remove(dst)
-			return result, fmt.Errorf("checksum mismatch for %s — copy deleted", name)
 		}
 
 		// Mark as copied + queued
@@ -134,7 +126,12 @@ func isSystemFile(name string) bool {
 		name == "ivault-provision.json"
 }
 
-func copyFile(src, dst string) error {
+// copyAndVerify copies src to dst while simultaneously computing the SHA-256
+// of the written bytes via io.TeeReader. If the resulting hash does not match
+// expectedChecksum the destination file is deleted and an error is returned.
+// This reduces ingest I/O from three full file reads to two (source checksum
+// for dedup + this combined copy-and-verify).
+func copyAndVerify(src, dst, expectedChecksum string) error {
 	in, err := os.Open(src)
 	if err != nil {
 		return err
@@ -147,9 +144,22 @@ func copyFile(src, dst string) error {
 	}
 	defer out.Close()
 
-	if _, err := io.Copy(out, in); err != nil {
+	hasher := sha256.New()
+	if _, err := io.Copy(out, io.TeeReader(in, hasher)); err != nil {
+		os.Remove(dst)
 		return err
 	}
 
-	return out.Sync()
+	if err := out.Sync(); err != nil {
+		os.Remove(dst)
+		return err
+	}
+
+	got := fmt.Sprintf("%x", hasher.Sum(nil))
+	if got != expectedChecksum {
+		os.Remove(dst)
+		return fmt.Errorf("checksum mismatch after copy (expected %s, got %s) — file deleted", expectedChecksum, got)
+	}
+
+	return nil
 }

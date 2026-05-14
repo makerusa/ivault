@@ -2,31 +2,76 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"log"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
-	"github.com/umarsear/ivault/internal/db"
-	"github.com/umarsear/ivault/internal/gadget"
-	"github.com/umarsear/ivault/internal/ingest"
-	"github.com/umarsear/ivault/internal/state"
-	"github.com/umarsear/ivault/internal/upload"
+	"github.com/makerusa/ivault/internal/config"
+	"github.com/makerusa/ivault/internal/db"
+	"github.com/makerusa/ivault/internal/gadget"
+	"github.com/makerusa/ivault/internal/ingest"
+	"github.com/makerusa/ivault/internal/state"
+	"github.com/makerusa/ivault/internal/upload"
 )
 
+// cancelHolder guards the upload cancel function against concurrent access
+// from the signal-handler goroutine and the UDC event goroutine.
+type cancelHolder struct {
+	mu sync.Mutex
+	fn context.CancelFunc
+}
+
+func (c *cancelHolder) set(fn context.CancelFunc) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.fn = fn
+}
+
+func (c *cancelHolder) call() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.fn != nil {
+		c.fn()
+	}
+}
+
 func main() {
+	cfgPath := flag.String("config", "/etc/ivault/config.json", "path to JSON config file")
+	flag.Parse()
+
+	cfg, err := config.LoadOrDefault(*cfgPath)
+	if err != nil {
+		log.Fatalf("failed to load config: %v", err)
+	}
+
+	ingestCfg := ingest.IngestConfig{
+		ImagePath:   cfg.ImagePath,
+		MountPoint:  cfg.MountPoint,
+		UploadQueue: cfg.UploadQueue,
+	}
+	uploadCfg := upload.UploadConfig{
+		UploadQueue:  cfg.UploadQueue,
+		RcloneRemote: cfg.RcloneRemote,
+		RclonePath:   cfg.RclonePath,
+		DestID:       1,
+		Workers:      cfg.UploadWorkers,
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	database, err := db.Open("/var/lib/ivault/ivault.db")
+	database, err := db.Open(cfg.DBPath)
 	if err != nil {
 		log.Fatalf("failed to open db: %v", err)
 	}
 	defer database.Close()
 
-	if err := startupRecovery(database); err != nil {
+	if err := startupRecovery(database, ingestCfg); err != nil {
 		log.Printf("startup recovery warning: %v", err)
 	}
 
@@ -37,10 +82,10 @@ func main() {
 		database.Log("info", "state", msg)
 	})
 
-	monitor := gadget.NewMonitor()
+	monitor := gadget.NewMonitor(cfg.UDCName)
 	monitor.Start(ctx)
 
-	var uploadCancel context.CancelFunc
+	var holder cancelHolder
 
 	// UDC event handler
 	go func() {
@@ -58,14 +103,12 @@ func main() {
 						log.Println("device plugged in during sync — interrupting")
 						database.Log("warn", "gadget", "device plugged in during sync — interrupting")
 
-						if uploadCancel != nil {
-							uploadCancel()
-						}
+						holder.call()
 
-						ingest.Unmount()
+						ingest.Unmount(ingestCfg)
 
 						sm.Transition(state.StateAttaching)
-						if err := gadget.Attach("/nvme/usb_disk.img"); err != nil {
+						if err := gadget.Attach(cfg.ImagePath, cfg.UDCName); err != nil {
 							log.Println("reattach error:", err)
 							sm.Transition(state.StateError)
 						} else {
@@ -79,11 +122,11 @@ func main() {
 
 	// Attach gadget
 	sm.Transition(state.StateAttaching)
-	if err := gadget.Attach("/nvme/usb_disk.img"); err != nil {
+	if err := gadget.Attach(cfg.ImagePath, cfg.UDCName); err != nil {
 		log.Fatalf("failed to attach gadget: %v", err)
 	}
 	sm.Transition(state.StateRecording)
-	log.Println("iVault ready — gadget state:", gadget.State())
+	log.Println("iVault ready — gadget state:", gadget.State(cfg.UDCName))
 	database.Log("info", "main", "iVault started")
 
 	sigs := make(chan os.Signal, 1)
@@ -96,32 +139,42 @@ func main() {
 			switch sig {
 			case syscall.SIGUSR1:
 				log.Println("maintenance triggered via signal")
-				uploadCancel = runMaintenance(ctx, sm, database)
+				// Only update the cancel holder if maintenance actually started;
+				// runMaintenance returns nil when already in progress.
+				if fn := runMaintenance(ctx, sm, database, cfg, ingestCfg, uploadCfg); fn != nil {
+					holder.set(fn)
+				}
 
 			case syscall.SIGTERM, syscall.SIGINT:
 				log.Println("shutdown signal received")
 				database.Log("info", "main", "shutdown initiated")
 				sm.Transition(state.StateShuttingDown)
 
-				if uploadCancel != nil {
-					uploadCancel()
-				}
+				holder.call()
 
-				ingest.Unmount()
+				ingest.Unmount(ingestCfg)
 
-				if err := gadget.Detach(); err != nil {
+				if err := gadget.Detach(cfg.UDCName); err != nil {
 					log.Println("detach error on shutdown:", err)
 				}
 
 				database.Log("info", "main", "shutdown complete")
 				log.Println("iVault stopped cleanly")
-				os.Exit(0)
+				// Return instead of os.Exit so defers (database.Close) run cleanly.
+				return
 			}
 		}
 	}
 }
 
-func runMaintenance(ctx context.Context, sm *state.Machine, database *db.DB) context.CancelFunc {
+func runMaintenance(
+	ctx context.Context,
+	sm *state.Machine,
+	database *db.DB,
+	cfg *config.Config,
+	ingestCfg ingest.IngestConfig,
+	uploadCfg upload.UploadConfig,
+) context.CancelFunc {
 	s := sm.State()
 	if s == state.StateMaintenance ||
 		s == state.StateDetaching ||
@@ -143,21 +196,22 @@ func runMaintenance(ctx context.Context, sm *state.Machine, database *db.DB) con
 
 		// Detach
 		sm.Transition(state.StateDetaching)
-		if err := gadget.Detach(); err != nil {
+		if err := gadget.Detach(cfg.UDCName); err != nil {
 			log.Println("detach error:", err)
 			database.EndSession(sessionID, 0, 0, 0, "error")
 			sm.Transition(state.StateError)
 			uploadCancel()
 			return
 		}
+		// Brief settle time so the USB host sees the disconnect before we mount.
 		time.Sleep(500 * time.Millisecond)
 
 		// Mount
 		sm.Transition(state.StateMaintenance)
-		if err := ingest.Mount(); err != nil {
+		if err := ingest.Mount(ingestCfg); err != nil {
 			log.Println("mount error:", err)
 			database.Log("error", "ingest", err.Error())
-			gadget.Attach("/nvme/usb_disk.img")
+			gadget.Attach(cfg.ImagePath, cfg.UDCName)
 			database.EndSession(sessionID, 0, 0, 0, "error")
 			sm.Transition(state.StateRecording)
 			uploadCancel()
@@ -166,7 +220,7 @@ func runMaintenance(ctx context.Context, sm *state.Machine, database *db.DB) con
 		log.Println("disk image mounted")
 
 		// Ingest with full tracking
-		result, err := ingest.Run(database, sessionID)
+		result, err := ingest.Run(ingestCfg, database, sessionID)
 		if err != nil {
 			log.Println("ingest error:", err)
 			database.Log("warn", "ingest", fmt.Sprintf("ingest error: %v", err))
@@ -179,13 +233,13 @@ func runMaintenance(ctx context.Context, sm *state.Machine, database *db.DB) con
 		))
 
 		// Unmount
-		if err := ingest.Unmount(); err != nil {
+		if err := ingest.Unmount(ingestCfg); err != nil {
 			log.Println("unmount error:", err)
 		}
 
 		// Reattach
 		sm.Transition(state.StateAttaching)
-		if err := gadget.Attach("/nvme/usb_disk.img"); err != nil {
+		if err := gadget.Attach(cfg.ImagePath, cfg.UDCName); err != nil {
 			log.Println("reattach error:", err)
 			database.EndSession(sessionID, result.FilesFound, result.FilesCopied, result.BytesCopied, "error")
 			sm.Transition(state.StateError)
@@ -210,7 +264,7 @@ func runMaintenance(ctx context.Context, sm *state.Machine, database *db.DB) con
 			}
 
 			log.Println("starting upload...")
-			uploaded, err := upload.UploadAll(uploadCtx, database)
+			uploaded, err := upload.UploadAll(uploadCtx, database, uploadCfg)
 			if err != nil {
 				log.Println("upload error:", err)
 				database.Log("error", "upload", err.Error())
@@ -225,13 +279,13 @@ func runMaintenance(ctx context.Context, sm *state.Machine, database *db.DB) con
 	return uploadCancel
 }
 
-func startupRecovery(database *db.DB) error {
+func startupRecovery(database *db.DB, ingestCfg ingest.IngestConfig) error {
 	log.Println("running startup recovery...")
 
-	// Unmount if stuck
-	ingest.Unmount()
+	// Unmount if stuck from a previous crash or power loss
+	ingest.Unmount(ingestCfg)
 
-	// Reset any files stuck in uploading state
+	// Reset any files stuck in uploading state back to queued for retry
 	if err := database.ResetStuckFiles(); err != nil {
 		return fmt.Errorf("reset stuck files: %w", err)
 	}

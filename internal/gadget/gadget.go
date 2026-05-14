@@ -10,16 +10,18 @@ import (
 
 const (
 	gadgetDir = "/sys/kernel/config/usb_gadget/ivault"
-	udcName   = "fc000000.usb"
-	udcPath   = "/sys/class/udc/fc000000.usb"
+	udcPath   = "/sys/class/udc/"
 )
 
-func Attach(imagePath string) error {
+// Attach creates and enables the USB mass storage gadget using the given disk
+// image and UDC (USB Device Controller) name.
+// The udcName can be found by running: ls /sys/class/udc/
+func Attach(imagePath, udcName string) error {
 	// Clean up any existing gadget
-	Detach()
+	Detach(udcName)
 
-	// Wait for gadget dir to be gone, not for UDC state
-	// UDC stays "configured" when cable is plugged in — that's normal
+	// Wait for gadget dir to be gone.
+	// The UDC stays "configured" when a cable is plugged in — that's normal.
 	for i := 0; i < 10; i++ {
 		if _, err := os.Stat(gadgetDir); os.IsNotExist(err) {
 			break
@@ -100,20 +102,33 @@ func Attach(imagePath string) error {
 	return nil
 }
 
-func Detach() error {
+// Detach disables and tears down the USB gadget configfs tree.
+// udcName is needed to issue a final soft-disconnect fallback via the UDC sysfs
+// in case the gadget directory was already gone.
+func Detach(udcName string) error {
+	udcSysPath := udcPath + udcName
+
 	if _, err := os.Stat(gadgetDir); os.IsNotExist(err) {
-		// Gadget dir gone but UDC might still be bound
-		// Write empty to UDC gadget softlink if it exists
-		os.WriteFile(udcPath+"/soft_connect", []byte("0"), 0644)
+		// Gadget dir is already gone; send a soft-disconnect via the UDC sysfs
+		// node as a belt-and-suspenders measure to ensure the host sees a clean
+		// disconnect.
+		os.WriteFile(udcSysPath+"/soft_connect", []byte("0"), 0644)
 		return nil
 	}
 
-	// Disable UDC via gadget dir
-	writeFile(gadgetDir+"/UDC", "")
+	// Disable the UDC. Retry a few times since the kernel may briefly refuse
+	// the write if the USB bus is mid-transaction.
+	for i := 0; i < 5; i++ {
+		if err := writeFile(gadgetDir+"/UDC", ""); err == nil {
+			break
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
 	time.Sleep(1 * time.Second)
 
+	// Teardown order matters: symlinks before directories, children before parents.
 	steps := []string{
-		gadgetDir + "/configs/c.1/mass_storage.0",
+		gadgetDir + "/configs/c.1/mass_storage.0", // symlink — must go first
 		gadgetDir + "/configs/c.1/strings/0x409",
 		gadgetDir + "/configs/c.1",
 		gadgetDir + "/functions/mass_storage.0",
@@ -138,17 +153,23 @@ func Detach() error {
 		}
 	}
 
+	// Final soft-disconnect to ensure the host sees the detach even if the
+	// configfs teardown above succeeded but left the UDC bound.
+	os.WriteFile(udcSysPath+"/soft_connect", []byte("0"), 0644)
+
 	return nil
 }
 
-func State() string {
-	b, err := os.ReadFile(udcPath + "/state")
+// State returns the current UDC state string (e.g. "configured", "not attached").
+func State(udcName string) string {
+	b, err := os.ReadFile(udcPath + udcName + "/state")
 	if err != nil {
 		return "unknown"
 	}
 	return strings.TrimSpace(string(b))
 }
 
+// IsAttached reports whether the gadget configfs directory exists.
 func IsAttached() bool {
 	_, err := os.Stat(gadgetDir)
 	return err == nil
