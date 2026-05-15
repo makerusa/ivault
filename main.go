@@ -263,13 +263,19 @@ func runMaintenance(
 		if err := ingest.Unmount(ingestCfg); err != nil {
 			log.Println("unmount error:", err)
 		}
-		
-		time.Sleep(1000 * time.Millisecond)
 
-		// Reattach
+		// Retry reattach — the kernel needs time to free the loop device after unmount.
 		sm.Transition(state.StateAttaching)
-		if err := gadget.Attach(cfg.ImagePath, cfg.UDCName); err != nil {
-			log.Println("reattach error:", err)
+		var attachErr error
+		for attempt := 1; attempt <= 10; attempt++ {
+			time.Sleep(500 * time.Millisecond)
+			if attachErr = gadget.Attach(cfg.ImagePath, cfg.UDCName); attachErr == nil {
+				break
+			}
+			log.Printf("reattach attempt %d/10 failed: %v", attempt, attachErr)
+		}
+		if attachErr != nil {
+			log.Println("reattach error: all attempts failed:", attachErr)
 			database.EndSession(sessionID, result.FilesFound, result.FilesCopied, result.BytesCopied, "error")
 			sm.Transition(state.StateError)
 			uploadCancel()
