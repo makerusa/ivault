@@ -7,40 +7,31 @@ import (
 type State int
 
 const (
-	StateProvisioning State = iota
-	StateBooting
-	StateRecording
-	StateDetaching
-	StateMaintenance
-	StateAttaching
-	StateUploading
-	StateOffline
+	StateBooting State = iota
+	StateDisconnected
+	StateConnecting
+	StateConnected
+	StateDisconnecting
+	StateSyncing
 	StateError
-	StateShuttingDown
 )
 
 func (s State) String() string {
 	switch s {
-	case StateProvisioning:
-		return "provisioning"
 	case StateBooting:
 		return "booting"
-	case StateRecording:
-		return "recording"
-	case StateDetaching:
-		return "detaching"
-	case StateMaintenance:
-		return "maintenance"
-	case StateAttaching:
-		return "attaching"
-	case StateUploading:
-		return "uploading"
-	case StateOffline:
-		return "offline"
+	case StateDisconnected:
+		return "disconnected"
+	case StateConnecting:
+		return "connecting"
+	case StateConnected:
+		return "connected"
+	case StateDisconnecting:
+		return "disconnecting"
+	case StateSyncing:
+		return "syncing"
 	case StateError:
 		return "error"
-	case StateShuttingDown:
-		return "shutting_down"
 	default:
 		return "unknown"
 	}

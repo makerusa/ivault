@@ -101,10 +101,10 @@ func main() {
 
 				if event == gadget.UDCPlugged {
 					s := sm.State()
-					if s == state.StateUploading || s == state.StateMaintenance || s == state.StateOffline {
-						if s == state.StateOffline {
+					if s == state.StateSyncing || s == state.StateDisconnected {
+						if s == state.StateDisconnected {
 							log.Println("device plugged in — loading disk image")
-							database.Log("info", "gadget", "device plugged in after offline")
+							database.Log("info", "gadget", "device plugged in after disconnect")
 						} else {
 							log.Println("device plugged in during sync — interrupting")
 							database.Log("warn", "gadget", "device plugged in during sync — interrupting")
@@ -112,7 +112,7 @@ func main() {
 							ingest.Unmount(ingestCfg)
 						}
 
-						sm.Transition(state.StateAttaching)
+						sm.Transition(state.StateConnecting)
 						var err error
 						if !gadget.IsAttached() {
 							log.Println("device plugged in — performing first-time gadget attach")
@@ -126,13 +126,13 @@ func main() {
 							log.Println("attach/load error:", err)
 							sm.Transition(state.StateError)
 						} else {
-							sm.Transition(state.StateRecording)
+							sm.Transition(state.StateConnected)
 						}
 					}
 				} else if event == gadget.UDCUnplugged {
 					s := sm.State()
-					if s == state.StateRecording {
-						log.Println("device unplugged — triggering automatic maintenance")
+					if s == state.StateConnected {
+						log.Println("device unplugged — triggering automatic sync")
 						// reattachAfter=false: host is gone, so wait for re-plug
 						if fn := runMaintenance(ctx, sm, database, cfg, ingestCfg, uploadCfg, false); fn != nil {
 							holder.set(fn)
@@ -144,12 +144,12 @@ func main() {
 	}()
 
 	// Initial attach attempt
-	sm.Transition(state.StateAttaching)
+	sm.Transition(state.StateConnecting)
 	if err := gadget.Attach(cfg.ImagePath, cfg.UDCName); err != nil {
 		log.Printf("initial attach skipped (unplugged or busy): %v", err)
-		sm.Transition(state.StateOffline)
+		sm.Transition(state.StateDisconnected)
 	} else {
-		sm.Transition(state.StateRecording)
+		sm.Transition(state.StateConnected)
 		log.Println("iVault ready — gadget state:", gadget.State(cfg.UDCName))
 	}
 	database.Log("info", "main", "iVault started")
@@ -175,7 +175,7 @@ func main() {
 			case syscall.SIGTERM, syscall.SIGINT:
 				log.Println("shutdown signal received")
 				database.Log("info", "main", "shutdown initiated")
-				sm.Transition(state.StateShuttingDown)
+				// No specific state transition needed for internal shutdown
 
 				holder.call()
 
@@ -204,10 +204,10 @@ func runMaintenance(
 	reattachAfter bool,
 ) context.CancelFunc {
 	s := sm.State()
-	if s == state.StateMaintenance ||
-		s == state.StateDetaching ||
-		s == state.StateAttaching {
-		log.Println("maintenance already in progress — skipping")
+	if s == state.StateSyncing ||
+		s == state.StateDisconnecting ||
+		s == state.StateConnecting {
+		log.Println("sync already in progress — skipping")
 		return nil
 	}
 
@@ -223,7 +223,7 @@ func runMaintenance(
 		}
 
 		// Eject (makes host see "empty drive")
-		sm.Transition(state.StateDetaching)
+		sm.Transition(state.StateDisconnecting)
 		if err := gadget.Eject(); err != nil {
 			log.Println("eject error:", err)
 		}
@@ -231,13 +231,13 @@ func runMaintenance(
 		time.Sleep(1 * time.Second)
 
 		// Mount
-		sm.Transition(state.StateMaintenance)
+		sm.Transition(state.StateSyncing)
 		if err := ingest.Mount(ingestCfg); err != nil {
 			log.Println("mount error:", err)
 			database.Log("error", "ingest", err.Error())
 			gadget.Load(cfg.ImagePath)
 			database.EndSession(sessionID, 0, 0, 0, "error")
-			sm.Transition(state.StateRecording)
+			sm.Transition(state.StateConnected)
 			uploadCancel()
 			return
 		}
@@ -276,7 +276,7 @@ func runMaintenance(
 		}
 
 		if reattachAfter {
-			sm.Transition(state.StateAttaching)
+			sm.Transition(state.StateConnecting)
 			if err := gadget.Load(cfg.ImagePath); err != nil {
 				log.Println("load error:", err)
 				database.EndSession(sessionID, result.FilesFound, result.FilesCopied, result.BytesCopied, "error")
@@ -284,23 +284,23 @@ func runMaintenance(
 				uploadCancel()
 				return
 			}
-			log.Println("gadget reloaded — device can record again")
+			log.Println("gadget reloaded — device connected again")
 		} else {
-			sm.Transition(state.StateOffline)
-			log.Println("maintenance complete — waiting for host to plug back in")
+			sm.Transition(state.StateDisconnected)
+			log.Println("sync complete — waiting for host to plug back in")
 		}
 
 			database.EndSession(sessionID, result.FilesFound, result.FilesCopied, result.BytesCopied, "complete")
 
 			// Upload in background (network-based, runs regardless of USB state)
-			sm.Transition(state.StateUploading)
+			sm.Transition(state.StateSyncing)
 			go func() {
 				// Return to the correct state after upload depending on whether
 				// the host was still connected when maintenance ran.
 				if reattachAfter {
-					defer sm.Transition(state.StateRecording)
+					defer sm.Transition(state.StateConnected)
 				} else {
-					defer sm.Transition(state.StateOffline)
+					defer sm.Transition(state.StateDisconnected)
 				}
 
 				select {
