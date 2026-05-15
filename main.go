@@ -234,6 +234,11 @@ func runMaintenance(
 			log.Println("ingest error:", err)
 			database.Log("warn", "ingest", fmt.Sprintf("ingest error: %v", err))
 		}
+		
+		if result == nil {
+			result = &ingest.IngestResult{}
+		}
+
 		log.Printf("ingest: found=%d copied=%d skipped=%d bytes=%d",
 			result.FilesFound, result.FilesCopied, result.Skipped, result.BytesCopied)
 		database.Log("info", "ingest", fmt.Sprintf(
