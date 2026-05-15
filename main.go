@@ -116,6 +116,14 @@ func main() {
 							sm.Transition(state.StateRecording)
 						}
 					}
+				} else if event == gadget.UDCUnplugged {
+					s := sm.State()
+					if s == state.StateRecording {
+						log.Println("device unplugged — triggering automatic maintenance")
+						if fn := runMaintenance(ctx, sm, database, cfg, ingestCfg, uploadCfg); fn != nil {
+							holder.set(fn)
+						}
+					}
 				}
 			}
 		}
