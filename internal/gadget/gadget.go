@@ -186,6 +186,14 @@ func Load(imagePath string) error {
 		if err == nil {
 			return nil
 		}
+		// If the error is "busy", it might be because it's already loaded or 
+		// the host is actively communicating. Check if the path is already correct.
+		if strings.Contains(err.Error(), "device or resource busy") {
+			current, _ := os.ReadFile(path)
+			if strings.TrimSpace(string(current)) == strings.TrimSpace(imagePath) {
+				return nil // Already loaded, ignore error
+			}
+		}
 		time.Sleep(500 * time.Millisecond)
 	}
 	return err
