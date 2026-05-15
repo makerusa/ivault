@@ -26,24 +26,25 @@ type ProvisionFile struct {
 }
 
 // Process checks for ivault.provision in the mount point, and if found,
-// executes the provisioning sequence.
-func Process(mountPoint string, cfgPath string) error {
+// executes the provisioning sequence. Returns (true, nil) if provisioning
+// was successful, (false, nil) if no file was found, or (false, error) on failure.
+func Process(mountPoint string, cfgPath string) (bool, error) {
 	provisionPath := filepath.Join(mountPoint, "ivault.provision")
 	
 	if _, err := os.Stat(provisionPath); os.IsNotExist(err) {
-		return nil // No provision file found, nothing to do
+		return false, nil // No provision file found, nothing to do
 	}
 
 	log.Println("provision: ivault.provision detected. Starting provisioning sequence...")
 
 	data, err := os.ReadFile(provisionPath)
 	if err != nil {
-		return fmt.Errorf("failed to read provision file: %w", err)
+		return false, fmt.Errorf("failed to read provision file: %w", err)
 	}
 
 	var pf ProvisionFile
 	if err := json.Unmarshal(data, &pf); err != nil {
-		return fmt.Errorf("failed to parse provision file: %w", err)
+		return false, fmt.Errorf("failed to parse provision file: %w", err)
 	}
 
 	// 1. Configure Network
@@ -59,17 +60,18 @@ func Process(mountPoint string, cfgPath string) error {
 	log.Printf("provision: bootstrapping with cloud API at %s", pf.CloudEndpoint)
 	apiKey, err := bootstrapDevice(pf.CloudEndpoint, pf.DeviceID, pf.UserID, pf.Token)
 	if err != nil {
-		return fmt.Errorf("bootstrap failed: %w", err)
+		return false, fmt.Errorf("bootstrap failed: %w", err)
 	}
 
 	// 3. Save Configuration
 	updates := config.Config{
+		UserID:        pf.UserID,
 		DeviceID:      pf.DeviceID,
 		DeviceAPIKey:  apiKey,
 		CloudEndpoint: pf.CloudEndpoint,
 	}
 	if err := config.UpdateConfig(cfgPath, updates); err != nil {
-		return fmt.Errorf("failed to save config: %w", err)
+		return false, fmt.Errorf("failed to save config: %w", err)
 	}
 
 	log.Println("provision: configuration saved successfully")
@@ -82,7 +84,7 @@ func Process(mountPoint string, cfgPath string) error {
 	}
 
 	log.Println("provision: sequence complete!")
-	return nil
+	return true, nil
 }
 
 func bootstrapDevice(endpoint, deviceID, userID, token string) (string, error) {

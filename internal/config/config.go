@@ -10,6 +10,7 @@ import (
 // hardware when fields are absent.
 type Config struct {
 	// Identity & API
+	UserID        string `json:"user_id"`
 	DeviceID      string `json:"device_id"`
 	DeviceAPIKey  string `json:"device_api_key"`
 	CloudEndpoint string `json:"cloud_endpoint"`
@@ -80,6 +81,9 @@ func UpdateConfig(path string, updates Config) error {
 		return err
 	}
 
+	if updates.UserID != "" {
+		cfg.UserID = updates.UserID
+	}
 	if updates.DeviceID != "" {
 		cfg.DeviceID = updates.DeviceID
 	}

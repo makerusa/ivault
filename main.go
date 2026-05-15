@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/makerusa/ivault/internal/agent"
 	"github.com/makerusa/ivault/internal/config"
 	"github.com/makerusa/ivault/internal/db"
 	"github.com/makerusa/ivault/internal/gadget"
@@ -138,6 +139,9 @@ func main() {
 	log.Println("iVault ready — gadget state:", gadget.State(cfg.UDCName))
 	database.Log("info", "main", "iVault started")
 
+	// Start Heartbeat Agent
+	agent.Start(ctx, cfg)
+
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, syscall.SIGTERM, syscall.SIGINT, syscall.SIGUSR1)
 	log.Println("Send SIGUSR1 to trigger maintenance: kill -USR1", os.Getpid())
@@ -229,7 +233,7 @@ func runMaintenance(
 		log.Println("disk image mounted")
 
 		// Ingest with full tracking
-		result, err := ingest.Run(ingestCfg, database, sessionID)
+		result, provisioned, err := ingest.Run(ingestCfg, database, sessionID)
 		if err != nil {
 			log.Println("ingest error:", err)
 			database.Log("warn", "ingest", fmt.Sprintf("ingest error: %v", err))
@@ -237,6 +241,15 @@ func runMaintenance(
 		
 		if result == nil {
 			result = &ingest.IngestResult{}
+		}
+
+		if provisioned {
+			log.Println("device was just provisioned — reloading config and starting agent")
+			newCfg, err := config.LoadOrDefault(ingestCfg.ConfigPath)
+			if err == nil {
+				*cfg = *newCfg
+				agent.Start(ctx, cfg)
+			}
 		}
 
 		log.Printf("ingest: found=%d copied=%d skipped=%d bytes=%d",

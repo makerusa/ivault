@@ -43,17 +43,18 @@ type IngestResult struct {
 	Skipped     int
 }
 
-func Run(cfg IngestConfig, database *db.DB, sessionID int64) (*IngestResult, error) {
+func Run(cfg IngestConfig, database *db.DB, sessionID int64) (*IngestResult, bool, error) {
 	result := &IngestResult{}
 
 	// Run provision check
-	if err := provision.Process(cfg.MountPoint, cfg.ConfigPath); err != nil {
-		return nil, fmt.Errorf("provisioning failed: %w", err)
+	provisioned, err := provision.Process(cfg.MountPoint, cfg.ConfigPath)
+	if err != nil {
+		return nil, false, fmt.Errorf("provisioning failed: %w", err)
 	}
 
 	entries, err := os.ReadDir(cfg.MountPoint)
 	if err != nil {
-		return nil, fmt.Errorf("read mount point: %w", err)
+		return nil, provisioned, fmt.Errorf("read mount point: %w", err)
 	}
 
 	for _, entry := range entries {
@@ -81,13 +82,13 @@ func Run(cfg IngestConfig, database *db.DB, sessionID int64) (*IngestResult, err
 		// the hash before the DB dedup lookup.
 		checksum, err := checksumFile(src)
 		if err != nil {
-			return result, fmt.Errorf("checksum %s: %w", name, err)
+			return result, provisioned, fmt.Errorf("checksum %s: %w", name, err)
 		}
 
 		// Check if already processed by checksum
 		existing, err := database.GetFileByChecksum(checksum)
 		if err != nil {
-			return result, fmt.Errorf("db lookup %s: %w", name, err)
+			return result, provisioned, fmt.Errorf("db lookup %s: %w", name, err)
 		}
 		if existing != nil {
 			result.Skipped++
@@ -103,14 +104,14 @@ func Run(cfg IngestConfig, database *db.DB, sessionID int64) (*IngestResult, err
 			State:          db.FileDiscovered,
 		})
 		if err != nil {
-			return result, fmt.Errorf("db insert %s: %w", name, err)
+			return result, provisioned, fmt.Errorf("db insert %s: %w", name, err)
 		}
 
 		// Copy to upload queue, verifying the destination checksum during the
 		// copy itself using io.TeeReader — avoids a third full read of the file.
 		dst := filepath.Join(cfg.UploadQueue, name)
 		if err := copyAndVerify(src, dst, checksum); err != nil {
-			return result, fmt.Errorf("copy %s: %w", name, err)
+			return result, provisioned, fmt.Errorf("copy %s: %w", name, err)
 		}
 
 		// Mark as copied + queued
@@ -121,7 +122,7 @@ func Run(cfg IngestConfig, database *db.DB, sessionID int64) (*IngestResult, err
 		result.BytesCopied += info.Size()
 	}
 
-	return result, nil
+	return result, provisioned, nil
 }
 
 func isSystemFile(name string) bool {
