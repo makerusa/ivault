@@ -121,7 +121,8 @@ func main() {
 					s := sm.State()
 					if s == state.StateRecording {
 						log.Println("device unplugged — triggering automatic maintenance")
-						if fn := runMaintenance(ctx, sm, database, cfg, ingestCfg, uploadCfg); fn != nil {
+						// reattachAfter=false: host is gone, so wait for re-plug
+						if fn := runMaintenance(ctx, sm, database, cfg, ingestCfg, uploadCfg, false); fn != nil {
 							holder.set(fn)
 						}
 					}
@@ -152,9 +153,8 @@ func main() {
 			switch sig {
 			case syscall.SIGUSR1:
 				log.Println("maintenance triggered via signal")
-				// Only update the cancel holder if maintenance actually started;
-				// runMaintenance returns nil when already in progress.
-				if fn := runMaintenance(ctx, sm, database, cfg, ingestCfg, uploadCfg); fn != nil {
+				// reattachAfter=true: manually triggered while plugged in
+				if fn := runMaintenance(ctx, sm, database, cfg, ingestCfg, uploadCfg, true); fn != nil {
 					holder.set(fn)
 				}
 
@@ -187,6 +187,7 @@ func runMaintenance(
 	cfg *config.Config,
 	ingestCfg ingest.IngestConfig,
 	uploadCfg upload.UploadConfig,
+	reattachAfter bool,
 ) context.CancelFunc {
 	s := sm.State()
 	if s == state.StateMaintenance ||
@@ -264,25 +265,32 @@ func runMaintenance(
 			log.Println("unmount error:", err)
 		}
 
-		// Retry reattach — the kernel needs time to free the loop device after unmount.
-		sm.Transition(state.StateAttaching)
-		var attachErr error
-		for attempt := 1; attempt <= 10; attempt++ {
-			time.Sleep(500 * time.Millisecond)
-			if attachErr = gadget.Attach(cfg.ImagePath, cfg.UDCName); attachErr == nil {
-				break
+		// Only reattach if the host is still physically connected (i.e. maintenance
+		// was triggered manually via SIGUSR1, not by an unplug event).
+		if reattachAfter {
+			sm.Transition(state.StateAttaching)
+			var attachErr error
+			for attempt := 1; attempt <= 10; attempt++ {
+				time.Sleep(500 * time.Millisecond)
+				if attachErr = gadget.Attach(cfg.ImagePath, cfg.UDCName); attachErr == nil {
+					break
+				}
+				log.Printf("reattach attempt %d/10 failed: %v", attempt, attachErr)
 			}
-			log.Printf("reattach attempt %d/10 failed: %v", attempt, attachErr)
-		}
-		if attachErr != nil {
-			log.Println("reattach error: all attempts failed:", attachErr)
-			database.EndSession(sessionID, result.FilesFound, result.FilesCopied, result.BytesCopied, "error")
-			sm.Transition(state.StateError)
-			uploadCancel()
-			return
+			if attachErr != nil {
+				log.Println("reattach error: all attempts failed:", attachErr)
+				database.EndSession(sessionID, result.FilesFound, result.FilesCopied, result.BytesCopied, "error")
+				sm.Transition(state.StateError)
+				uploadCancel()
+				return
+			}
+			log.Println("gadget reattached — device can record again")
+		} else {
+			// Unplugged maintenance — wait for the host to plug back in.
+			// The UDCPlugged event handler in main will call gadget.Attach.
+			log.Println("maintenance complete — waiting for host to plug back in")
 		}
 		sm.Transition(state.StateRecording)
-		log.Println("gadget reattached — device can record again")
 
 		database.EndSession(sessionID, result.FilesFound, result.FilesCopied, result.BytesCopied, "complete")
 
