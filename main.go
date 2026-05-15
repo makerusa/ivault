@@ -250,6 +250,8 @@ func runMaintenance(
 		if err := ingest.Unmount(ingestCfg); err != nil {
 			log.Println("unmount error:", err)
 		}
+		
+		time.Sleep(500 * time.Millisecond)
 
 		// Reattach
 		sm.Transition(state.StateAttaching)
