@@ -150,6 +150,26 @@ func Detach(udcName string) error {
 	return nil
 }
 
+// Eject removes the backing file from the mass storage gadget, making the
+// host see an "empty drive". This frees the file for local mounting.
+func Eject() error {
+	path := gadgetDir + "/functions/mass_storage.0/lun.0/file"
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		return nil
+	}
+	return writeFile(path, "")
+}
+
+// Load binds the backing file to the mass storage gadget, making it visible
+// to the host.
+func Load(imagePath string) error {
+	path := gadgetDir + "/functions/mass_storage.0/lun.0/file"
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		return fmt.Errorf("gadget not attached")
+	}
+	return writeFile(path, imagePath)
+}
+
 // State returns the current UDC state string (e.g. "configured", "not attached").
 func State(udcName string) string {
 	b, err := os.ReadFile(udcPath + udcName + "/state")

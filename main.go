@@ -103,7 +103,7 @@ func main() {
 					s := sm.State()
 					if s == state.StateUploading || s == state.StateMaintenance || s == state.StateOffline {
 						if s == state.StateOffline {
-							log.Println("device plugged in — reattaching after offline")
+							log.Println("device plugged in — loading disk image")
 							database.Log("info", "gadget", "device plugged in after offline")
 						} else {
 							log.Println("device plugged in during sync — interrupting")
@@ -113,8 +113,8 @@ func main() {
 						}
 
 						sm.Transition(state.StateAttaching)
-						if err := gadget.Attach(cfg.ImagePath, cfg.UDCName); err != nil {
-							log.Println("reattach error:", err)
+						if err := gadget.Load(cfg.ImagePath); err != nil {
+							log.Println("load error:", err)
 							sm.Transition(state.StateError)
 						} else {
 							sm.Transition(state.StateRecording)
@@ -211,16 +211,12 @@ func runMaintenance(
 			log.Println("failed to start session:", err)
 		}
 
-		// Detach
+		// Eject (makes host see "empty drive")
 		sm.Transition(state.StateDetaching)
-		if err := gadget.Detach(cfg.UDCName); err != nil {
-			log.Println("detach error:", err)
-			database.EndSession(sessionID, 0, 0, 0, "error")
-			sm.Transition(state.StateError)
-			uploadCancel()
-			return
+		if err := gadget.Eject(); err != nil {
+			log.Println("eject error:", err)
 		}
-		// Brief settle time so the USB host sees the disconnect before we mount.
+		// Brief settle time so the USB host sees the "media removed" before we mount.
 		time.Sleep(500 * time.Millisecond)
 
 		// Mount
@@ -228,7 +224,7 @@ func runMaintenance(
 		if err := ingest.Mount(ingestCfg); err != nil {
 			log.Println("mount error:", err)
 			database.Log("error", "ingest", err.Error())
-			gadget.Attach(cfg.ImagePath, cfg.UDCName)
+			gadget.Load(cfg.ImagePath)
 			database.EndSession(sessionID, 0, 0, 0, "error")
 			sm.Transition(state.StateRecording)
 			uploadCancel()
@@ -263,37 +259,25 @@ func runMaintenance(
 			result.FilesFound, result.FilesCopied, result.Skipped, result.BytesCopied,
 		))
 
-		// Unmount
+		// Unmount local filesystem
 		if err := ingest.Unmount(ingestCfg); err != nil {
 			log.Println("unmount error:", err)
 		}
 
-		// Only reattach if the host is still physically connected (i.e. maintenance
-		// was triggered manually via SIGUSR1, not by an unplug event).
 		if reattachAfter {
 			sm.Transition(state.StateAttaching)
-			var attachErr error
-			for attempt := 1; attempt <= 10; attempt++ {
-				time.Sleep(500 * time.Millisecond)
-				if attachErr = gadget.Attach(cfg.ImagePath, cfg.UDCName); attachErr == nil {
-					break
-				}
-				log.Printf("reattach attempt %d/10 failed: %v", attempt, attachErr)
-			}
-			if attachErr != nil {
-				log.Println("reattach error: all attempts failed:", attachErr)
+			if err := gadget.Load(cfg.ImagePath); err != nil {
+				log.Println("load error:", err)
 				database.EndSession(sessionID, result.FilesFound, result.FilesCopied, result.BytesCopied, "error")
 				sm.Transition(state.StateError)
 				uploadCancel()
 				return
 			}
-				log.Println("gadget reattached — device can record again")
-			} else {
-				// Unplugged maintenance — go offline and wait for the host to plug back in.
-				// The UDCPlugged event handler will call gadget.Attach.
-				sm.Transition(state.StateOffline)
-				log.Println("maintenance complete — waiting for host to plug back in")
-			}
+			log.Println("gadget reloaded — device can record again")
+		} else {
+			sm.Transition(state.StateOffline)
+			log.Println("maintenance complete — waiting for host to plug back in")
+		}
 
 			database.EndSession(sessionID, result.FilesFound, result.FilesCopied, result.BytesCopied, "complete")
 
