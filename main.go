@@ -154,7 +154,8 @@ func main() {
 	}
 	database.Log("info", "main", "iVault started")
 
-	// Start Heartbeat Agent
+	// Start Heartbeat Agent and Log Collection
+	agent.InitLogs(ctx, cfg)
 	agent.Start(ctx, cfg, sm)
 
 	sigs := make(chan os.Signal, 1)

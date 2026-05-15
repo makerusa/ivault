@@ -26,7 +26,18 @@ func Start(ctx context.Context, cfg *config.Config, sm *state.Machine) {
 		ticker := time.NewTicker(30 * time.Second)
 		defer ticker.Stop()
 
-		// Send initial heartbeat immediately
+		trigger := make(chan struct{}, 1)
+		
+		// Send heartbeat immediately on state transition
+		sm.OnChange(func(old, new state.State) {
+			select {
+			case trigger <- struct{}{}:
+			default:
+				// Already a trigger pending
+			}
+		})
+
+		// Send initial heartbeat
 		sendHeartbeat(cfg, sm)
 
 		for {
@@ -35,6 +46,9 @@ func Start(ctx context.Context, cfg *config.Config, sm *state.Machine) {
 				log.Println("agent: stopping heartbeat loop")
 				return
 			case <-ticker.C:
+				sendHeartbeat(cfg, sm)
+			case <-trigger:
+				log.Println("agent: triggering priority heartbeat due to state change")
 				sendHeartbeat(cfg, sm)
 			}
 		}
