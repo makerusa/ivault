@@ -10,10 +10,12 @@ import (
 	"time"
 
 	"github.com/makerusa/ivault/internal/config"
+	"github.com/makerusa/ivault/internal/state"
 )
 
 // Start begins the heartbeat loop in a background goroutine.
-func Start(ctx context.Context, cfg *config.Config) {
+// sm is used to read the current device state for each heartbeat.
+func Start(ctx context.Context, cfg *config.Config, sm *state.Machine) {
 	if cfg.DeviceID == "" || cfg.DeviceAPIKey == "" || cfg.CloudEndpoint == "" {
 		log.Println("agent: device not provisioned, skipping heartbeat")
 		return
@@ -25,7 +27,7 @@ func Start(ctx context.Context, cfg *config.Config) {
 		defer ticker.Stop()
 
 		// Send initial heartbeat immediately
-		sendHeartbeat(cfg)
+		sendHeartbeat(cfg, sm)
 
 		for {
 			select {
@@ -33,21 +35,28 @@ func Start(ctx context.Context, cfg *config.Config) {
 				log.Println("agent: stopping heartbeat loop")
 				return
 			case <-ticker.C:
-				sendHeartbeat(cfg)
+				sendHeartbeat(cfg, sm)
 			}
 		}
 	}()
 }
 
-func sendHeartbeat(cfg *config.Config) {
+func sendHeartbeat(cfg *config.Config, sm *state.Machine) {
 	stats, err := CollectStats("/nvme") // Assuming /nvme is the data partition
 	if err != nil {
 		log.Printf("agent: failed to collect stats: %v", err)
 	}
 
-	// Send just the telemetry stats — the portal uses COALESCE so the existing
-	// device status is preserved. Sending "online" would violate the DB CHECK constraint.
-	body, _ := json.Marshal(stats)
+	// Include the current device state so the portal dashboard stays in sync.
+	currentStatus := sm.State().String()
+	payload := struct {
+		Stats
+		Status *string `json:"status"`
+	}{
+		Stats:  stats,
+		Status: &currentStatus,
+	}
+	body, _ := json.Marshal(payload)
 	url := fmt.Sprintf("%s/api/devices/%s/heartbeat", cfg.CloudEndpoint, cfg.DeviceID)
 
 	req, err := http.NewRequest("POST", url, bytes.NewBuffer(body))
