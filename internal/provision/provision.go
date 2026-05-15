@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/makerusa/ivault/internal/config"
@@ -47,6 +48,10 @@ func Process(mountPoint string, cfgPath string) (bool, error) {
 		return false, fmt.Errorf("failed to parse provision file: %w", err)
 	}
 
+	// Always delete the provision file once we've started processing it to avoid 
+	// infinite retry loops if the handshake fails.
+	defer os.Remove(provisionPath)
+
 	// 1. Configure Network
 	if err := ConfigureNetwork(pf.Network); err != nil {
 		log.Printf("provision: network configuration failed: %v", err)
@@ -60,6 +65,13 @@ func Process(mountPoint string, cfgPath string) (bool, error) {
 	log.Printf("provision: bootstrapping with cloud API at %s", pf.CloudEndpoint)
 	apiKey, err := bootstrapDevice(pf.CloudEndpoint, pf.DeviceID, pf.UserID, pf.Token)
 	if err != nil {
+		// If the server says it's already provisioned, we can treat this as a success 
+		// (though we won't have the API key if this is our first time seeing the file 
+		// and it failed previously). 
+		if strings.Contains(err.Error(), "already provisioned") {
+			log.Println("provision: device is already provisioned on server")
+			return true, nil
+		}
 		return false, fmt.Errorf("bootstrap failed: %w", err)
 	}
 
@@ -75,13 +87,6 @@ func Process(mountPoint string, cfgPath string) (bool, error) {
 	}
 
 	log.Println("provision: configuration saved successfully")
-
-	// 4. Delete provision file
-	if err := os.Remove(provisionPath); err != nil {
-		log.Printf("provision: failed to delete provision file: %v", err)
-	} else {
-		log.Println("provision: ivault.provision deleted from drive")
-	}
 
 	log.Println("provision: sequence complete!")
 	return true, nil
