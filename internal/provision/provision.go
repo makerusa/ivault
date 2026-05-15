@@ -111,7 +111,7 @@ func bootstrapDevice(endpoint, deviceID, userID, token string) (string, error) {
 	}
 
 	var result struct {
-		DeviceAPIKey string `json:"device_api_key"`
+		DeviceAPIKey string `json:"deviceApiKey"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return "", err
