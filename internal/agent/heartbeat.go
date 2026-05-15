@@ -42,7 +42,7 @@ func Start(ctx context.Context, cfg *config.Config, sm *state.Machine) {
 }
 
 func sendHeartbeat(cfg *config.Config, sm *state.Machine) {
-	stats, err := CollectStats("/nvme") // Assuming /nvme is the data partition
+	stats, err := CollectStats("/nvme", cfg.ImagePath, cfg.UploadQueue)
 	if err != nil {
 		log.Printf("agent: failed to collect stats: %v", err)
 	}

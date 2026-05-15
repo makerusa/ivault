@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"os"
+	"os/exec"
 	"strconv"
 	"strings"
 	"syscall"
@@ -17,9 +18,30 @@ type Stats struct {
 	NvmeUsedGb    float64 `json:"nvmeUsedGb"`
 	NvmeTotalGb   float64 `json:"nvmeTotalGb"`
 	UptimeSeconds int     `json:"uptimeSeconds"`
+
+	// Networking
+	NetworkRxMbps    float64 `json:"networkRxMbps"`
+	NetworkTxMbps    float64 `json:"networkTxMbps"`
+	IPAddress        string  `json:"ipAddress"`
+	MACAddress       string  `json:"macAddress"`
+	NetworkInterface string  `json:"networkInterface"`
+	LinkSpeed        string  `json:"linkSpeed"`
+
+	// System Info
+	FirmwareVersion string `json:"firmwareVersion"`
+	ArmbianVersion  string `json:"armbianVersion"`
+	KernelVersion   string `json:"kernelVersion"`
+
+	// Virtual Drive
+	VirtualDriveUsedGb  float64 `json:"virtualDriveUsedGb"`
+	VirtualDriveTotalGb float64 `json:"virtualDriveTotalGb"`
+
+	// Queue
+	QueueFileCount int     `json:"queueFileCount"`
+	QueueSizeGb    float64 `json:"queueSizeGb"`
 }
 
-func CollectStats(nvmePath string) (Stats, error) {
+func CollectStats(nvmePath string, imagePath string, uploadQueue string) (Stats, error) {
 	var s Stats
 
 	// 1. CPU Usage
@@ -54,23 +76,68 @@ func CollectStats(nvmePath string) (Stats, error) {
 		s.UptimeSeconds = int(uptime)
 	}
 
+	// 6. System Info
+	s.KernelVersion = getKernelVersion()
+	s.ArmbianVersion = getArmbianVersion()
+	s.FirmwareVersion = "iVault v0.1.0" // Hardcoded for now
+
+	// 7. Networking
+	s.NetworkInterface = getPrimaryInterface()
+	if s.NetworkInterface != "" {
+		s.IPAddress = getIPAddress(s.NetworkInterface)
+		s.MACAddress = getMACAddress(s.NetworkInterface)
+		s.LinkSpeed = getLinkSpeed(s.NetworkInterface)
+		// Mbps calc would need delta over time, skipping for now
+	}
+
+	// 8. Virtual Drive (the image file itself)
+	if _, err := os.Stat(imagePath); err == nil {
+		if info, err := os.Stat(imagePath); err == nil {
+			s.VirtualDriveTotalGb = float64(info.Size()) / (1024 * 1024 * 1024)
+		}
+	}
+	// If it's mounted, we can get internal usage
+	if vUsed, vTotal, err := getDiskUsage("/mnt/ivault"); err == nil {
+		s.VirtualDriveUsedGb = vUsed
+		s.VirtualDriveTotalGb = vTotal // Use the live stat if available
+	}
+
+	// 9. Queue
+	if files, err := os.ReadDir(uploadQueue); err == nil {
+		s.QueueFileCount = len(files)
+		var totalSize int64
+		for _, f := range files {
+			if info, err := f.Info(); err == nil {
+				totalSize += info.Size()
+			}
+		}
+		s.QueueSizeGb = float64(totalSize) / (1024 * 1024 * 1024)
+	}
+
 	return s, nil
 }
 
 func getCPUUsage() (float64, error) {
+	// Simple way: read /proc/loadavg and multiply by 100/cores
+	// A better way is to parse /proc/stat twice, but this is a quick fix.
 	f, err := os.Open("/proc/loadavg")
 	if err != nil {
 		return 0, err
 	}
 	defer f.Close()
 
-	var load1, load5, load15 float64
-	_, err = fmt.Fscanf(f, "%f %f %f", &load1, &load5, &load15)
+	var load1 float64
+	_, err = fmt.Fscanf(f, "%f", &load1)
 	if err != nil {
 		return 0, err
 	}
-	// For simplicity, we'll return the 1-minute load average
-	return load1, nil
+
+	// Rock 5T has 8 cores
+	usage := (load1 / 8.0) * 100.0
+	if usage > 100 {
+		usage = 100
+	}
+	return usage, nil
 }
 
 func getMemUsage() (float64, float64, error) {
@@ -131,4 +198,60 @@ func getUptime() (float64, error) {
 	var uptime float64
 	_, err = fmt.Sscanf(string(data), "%f", &uptime)
 	return uptime, err
+}
+func getKernelVersion() string {
+	data, _ := os.ReadFile("/proc/version")
+	parts := strings.Split(string(data), " ")
+	if len(parts) > 2 {
+		return parts[2]
+	}
+	return ""
+}
+
+func getArmbianVersion() string {
+	data, _ := os.ReadFile("/etc/armbian-release")
+	scanner := bufio.NewScanner(strings.NewReader(string(data)))
+	for scanner.Scan() {
+		line := scanner.Text()
+		if strings.HasPrefix(line, "VERSION=") {
+			return strings.Trim(strings.TrimPrefix(line, "VERSION="), "\"")
+		}
+	}
+	return ""
+}
+
+func getPrimaryInterface() string {
+	data, _ := os.ReadFile("/proc/net/route")
+	scanner := bufio.NewScanner(strings.NewReader(string(data)))
+	for scanner.Scan() {
+		parts := strings.Fields(scanner.Text())
+		if len(parts) >= 3 && parts[2] == "00000000" { // Default gateway
+			return parts[0]
+		}
+	}
+	return "eth0"
+}
+
+func getIPAddress(iface string) string {
+	// Simple way using hostname command since we don't want net package bloat
+	out, _ := exec.Command("hostname", "-I").Output()
+	ips := strings.Fields(string(out))
+	if len(ips) > 0 {
+		return ips[0]
+	}
+	return ""
+}
+
+func getMACAddress(iface string) string {
+	data, _ := os.ReadFile("/sys/class/net/" + iface + "/address")
+	return strings.TrimSpace(string(data))
+}
+
+func getLinkSpeed(iface string) string {
+	data, _ := os.ReadFile("/sys/class/net/" + iface + "/speed")
+	speed := strings.TrimSpace(string(data))
+	if speed != "" {
+		return speed + " Mbps"
+	}
+	return ""
 }
