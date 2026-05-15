@@ -217,7 +217,7 @@ func runMaintenance(
 			log.Println("eject error:", err)
 		}
 		// Brief settle time so the USB host sees the "media removed" before we mount.
-		time.Sleep(500 * time.Millisecond)
+		time.Sleep(1 * time.Second)
 
 		// Mount
 		sm.Transition(state.StateMaintenance)

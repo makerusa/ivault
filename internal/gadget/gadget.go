@@ -157,7 +157,7 @@ func Eject() error {
 	if _, err := os.Stat(path); os.IsNotExist(err) {
 		return nil
 	}
-	return writeFile(path, "")
+	return writeFile(path, "\n")
 }
 
 // Load binds the backing file to the mass storage gadget, making it visible
@@ -167,7 +167,7 @@ func Load(imagePath string) error {
 	if _, err := os.Stat(path); os.IsNotExist(err) {
 		return fmt.Errorf("gadget not attached")
 	}
-	return writeFile(path, imagePath)
+	return writeFile(path, imagePath+"\n")
 }
 
 // State returns the current UDC state string (e.g. "configured", "not attached").
