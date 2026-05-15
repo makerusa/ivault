@@ -101,13 +101,16 @@ func main() {
 
 				if event == gadget.UDCPlugged {
 					s := sm.State()
-					if s == state.StateUploading || s == state.StateMaintenance {
-						log.Println("device plugged in during sync — interrupting")
-						database.Log("warn", "gadget", "device plugged in during sync — interrupting")
-
-						holder.call()
-
-						ingest.Unmount(ingestCfg)
+					if s == state.StateUploading || s == state.StateMaintenance || s == state.StateOffline {
+						if s == state.StateOffline {
+							log.Println("device plugged in — reattaching after offline")
+							database.Log("info", "gadget", "device plugged in after offline")
+						} else {
+							log.Println("device plugged in during sync — interrupting")
+							database.Log("warn", "gadget", "device plugged in during sync — interrupting")
+							holder.call()
+							ingest.Unmount(ingestCfg)
+						}
 
 						sm.Transition(state.StateAttaching)
 						if err := gadget.Attach(cfg.ImagePath, cfg.UDCName); err != nil {
@@ -284,40 +287,46 @@ func runMaintenance(
 				uploadCancel()
 				return
 			}
-			log.Println("gadget reattached — device can record again")
-		} else {
-			// Unplugged maintenance — wait for the host to plug back in.
-			// The UDCPlugged event handler in main will call gadget.Attach.
-			log.Println("maintenance complete — waiting for host to plug back in")
-		}
-		sm.Transition(state.StateRecording)
-
-		database.EndSession(sessionID, result.FilesFound, result.FilesCopied, result.BytesCopied, "complete")
-
-		// Upload in background
-		sm.Transition(state.StateUploading)
-		go func() {
-			defer sm.Transition(state.StateRecording)
-
-			select {
-			case <-uploadCtx.Done():
-				log.Println("upload cancelled before start")
-				return
-			default:
+				log.Println("gadget reattached — device can record again")
+			} else {
+				// Unplugged maintenance — go offline and wait for the host to plug back in.
+				// The UDCPlugged event handler will call gadget.Attach.
+				sm.Transition(state.StateOffline)
+				log.Println("maintenance complete — waiting for host to plug back in")
 			}
 
-			log.Println("starting upload...")
-			uploaded, err := upload.UploadAll(uploadCtx, database, uploadCfg)
-			if err != nil {
-				log.Println("upload error:", err)
-				database.Log("error", "upload", err.Error())
-				return
-			}
-			log.Printf("uploaded %d files", len(uploaded))
-			database.Log("info", "upload", fmt.Sprintf("uploaded %d files", len(uploaded)))
-			log.Println("--- maintenance cycle complete ---")
+			database.EndSession(sessionID, result.FilesFound, result.FilesCopied, result.BytesCopied, "complete")
+
+			// Upload in background (network-based, runs regardless of USB state)
+			sm.Transition(state.StateUploading)
+			go func() {
+				// Return to the correct state after upload depending on whether
+				// the host was still connected when maintenance ran.
+				if reattachAfter {
+					defer sm.Transition(state.StateRecording)
+				} else {
+					defer sm.Transition(state.StateOffline)
+				}
+
+				select {
+				case <-uploadCtx.Done():
+					log.Println("upload cancelled before start")
+					return
+				default:
+				}
+
+				log.Println("starting upload...")
+				uploaded, err := upload.UploadAll(uploadCtx, database, uploadCfg)
+				if err != nil {
+					log.Println("upload error:", err)
+					database.Log("error", "upload", err.Error())
+					return
+				}
+				log.Printf("uploaded %d files", len(uploaded))
+				database.Log("info", "upload", fmt.Sprintf("uploaded %d files", len(uploaded)))
+				log.Println("--- maintenance cycle complete ---")
+			}()
 		}()
-	}()
 
 	return uploadCancel
 }

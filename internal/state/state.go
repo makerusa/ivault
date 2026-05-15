@@ -13,6 +13,7 @@ const (
 	StateMaintenance
 	StateAttaching
 	StateUploading
+	StateOffline
 	StateError
 	StateShuttingDown
 )
@@ -31,6 +32,8 @@ func (s State) String() string {
 		return "attaching"
 	case StateUploading:
 		return "uploading"
+	case StateOffline:
+		return "offline"
 	case StateError:
 		return "error"
 	case StateShuttingDown:
