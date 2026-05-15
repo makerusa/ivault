@@ -2,6 +2,7 @@ package gadget
 
 import (
 	"context"
+	"log"
 	"strings"
 	"time"
 )
@@ -54,6 +55,10 @@ func (m *Monitor) Start(ctx context.Context) {
 				return
 			case <-time.After(m.interval):
 				current := State(m.udcName)
+
+				if current != m.last {
+					log.Printf("gadget: UDC state changed: %s -> %s", m.last, current)
+				}
 
 				// Debounce — only act on stable state change
 				if current == m.last {
