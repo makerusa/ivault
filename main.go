@@ -264,7 +264,7 @@ func runMaintenance(
 			log.Println("unmount error:", err)
 		}
 		
-		time.Sleep(500 * time.Millisecond)
+		time.Sleep(1000 * time.Millisecond)
 
 		// Reattach
 		sm.Transition(state.StateAttaching)
