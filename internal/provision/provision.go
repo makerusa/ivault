@@ -16,6 +16,7 @@ import (
 
 type ProvisionFile struct {
 	Version       int           `json:"version"`
+	UserID        string        `json:"userId"`
 	DeviceID      string        `json:"deviceId"`
 	DeviceName    string        `json:"deviceName"`
 	Token         string        `json:"token"`
@@ -56,7 +57,7 @@ func Process(mountPoint string, cfgPath string) error {
 
 	// 2. Bootstrap with Cloud API
 	log.Printf("provision: bootstrapping with cloud API at %s", pf.CloudEndpoint)
-	apiKey, err := bootstrapDevice(pf.CloudEndpoint, pf.DeviceID, pf.Token)
+	apiKey, err := bootstrapDevice(pf.CloudEndpoint, pf.DeviceID, pf.UserID, pf.Token)
 	if err != nil {
 		return fmt.Errorf("bootstrap failed: %w", err)
 	}
@@ -84,17 +85,18 @@ func Process(mountPoint string, cfgPath string) error {
 	return nil
 }
 
-func bootstrapDevice(endpoint, deviceID, token string) (string, error) {
+func bootstrapDevice(endpoint, deviceID, userID, token string) (string, error) {
 	url := fmt.Sprintf("%s/api/devices/%s/bootstrap", endpoint, deviceID)
 	
-	payload := map[string]string{"token": token}
-	body, _ := json.Marshal(payload)
-
-	req, err := http.NewRequest("POST", url, bytes.NewBuffer(body))
+	// The portal heartbeat handler expects an empty JSON body (or ignores it)
+	// and reads X-User-ID and X-Provision-Token from the headers.
+	req, err := http.NewRequest("POST", url, bytes.NewBuffer([]byte("{}")))
 	if err != nil {
 		return "", err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-User-ID", userID)
+	req.Header.Set("X-Provision-Token", token)
 
 	client := &http.Client{Timeout: 15 * time.Second}
 	resp, err := client.Do(req)
