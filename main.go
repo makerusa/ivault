@@ -53,6 +53,7 @@ func main() {
 		ImagePath:   cfg.ImagePath,
 		MountPoint:  cfg.MountPoint,
 		UploadQueue: cfg.UploadQueue,
+		ConfigPath:  *cfgPath,
 	}
 	uploadCfg := upload.UploadConfig{
 		UploadQueue:  cfg.UploadQueue,

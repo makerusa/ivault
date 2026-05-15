@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/makerusa/ivault/internal/db"
+	"github.com/makerusa/ivault/internal/provision"
 )
 
 // IngestConfig holds the filesystem paths used during ingest.
@@ -17,6 +18,7 @@ type IngestConfig struct {
 	ImagePath   string // e.g. /nvme/usb_disk.img
 	MountPoint  string // e.g. /nvme/ingest
 	UploadQueue string // e.g. /nvme/upload_queue
+	ConfigPath  string // e.g. /etc/ivault/config.json
 }
 
 func Mount(cfg IngestConfig) error {
@@ -43,6 +45,11 @@ type IngestResult struct {
 
 func Run(cfg IngestConfig, database *db.DB, sessionID int64) (*IngestResult, error) {
 	result := &IngestResult{}
+
+	// Run provision check
+	if err := provision.Process(cfg.MountPoint, cfg.ConfigPath); err != nil {
+		return nil, fmt.Errorf("provisioning failed: %w", err)
+	}
 
 	entries, err := os.ReadDir(cfg.MountPoint)
 	if err != nil {
@@ -123,6 +130,7 @@ func isSystemFile(name string) bool {
 		name == ".DS_Store" ||
 		name == ".Spotlight-V100" ||
 		name == ".fseventsd" ||
+		name == "ivault.provision" ||
 		name == "ivault-provision.json"
 }
 

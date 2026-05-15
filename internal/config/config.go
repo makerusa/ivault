@@ -9,6 +9,11 @@ import (
 // JSON file and fall back to sensible defaults for the reference Rock 5T
 // hardware when fields are absent.
 type Config struct {
+	// Identity & API
+	DeviceID      string `json:"device_id"`
+	DeviceAPIKey  string `json:"device_api_key"`
+	CloudEndpoint string `json:"cloud_endpoint"`
+
 	// Database
 	DBPath string `json:"db_path"` // default: /var/lib/ivault/ivault.db
 
@@ -66,4 +71,34 @@ func LoadOrDefault(path string) (*Config, error) {
 		return Default(), nil
 	}
 	return cfg, err
+}
+
+// UpdateConfig selectively merges updates into the current config file and writes it back.
+func UpdateConfig(path string, updates Config) error {
+	cfg, err := LoadOrDefault(path)
+	if err != nil {
+		return err
+	}
+
+	if updates.DeviceID != "" {
+		cfg.DeviceID = updates.DeviceID
+	}
+	if updates.DeviceAPIKey != "" {
+		cfg.DeviceAPIKey = updates.DeviceAPIKey
+	}
+	if updates.CloudEndpoint != "" {
+		cfg.CloudEndpoint = updates.CloudEndpoint
+	}
+
+	data, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return err
+	}
+
+	// Write to temporary file then rename for atomic update
+	tmpPath := path + ".tmp"
+	if err := os.WriteFile(tmpPath, data, 0644); err != nil {
+		return err
+	}
+	return os.Rename(tmpPath, path)
 }
