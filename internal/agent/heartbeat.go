@@ -45,17 +45,9 @@ func sendHeartbeat(cfg *config.Config) {
 		log.Printf("agent: failed to collect stats: %v", err)
 	}
 
-	// Add additional metadata (status can be pulled from state machine if we passed it, 
-	// but for now we'll just send 'online')
-	payload := struct {
-		Stats
-		Status string `json:"status"`
-	}{
-		Stats:  stats,
-		Status: "online",
-	}
-
-	body, _ := json.Marshal(payload)
+	// Send just the telemetry stats — the portal uses COALESCE so the existing
+	// device status is preserved. Sending "online" would violate the DB CHECK constraint.
+	body, _ := json.Marshal(stats)
 	url := fmt.Sprintf("%s/api/devices/%s/heartbeat", cfg.CloudEndpoint, cfg.DeviceID)
 
 	req, err := http.NewRequest("POST", url, bytes.NewBuffer(body))
@@ -67,9 +59,6 @@ func sendHeartbeat(cfg *config.Config) {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-User-ID", cfg.UserID)
 	req.Header.Set("X-Device-Key", cfg.DeviceAPIKey)
-
-	// Wait, the portal expects X-User-ID! I need to ensure the config stores it.
-	// In the provision step, I didn't save UserID to the config. I should fix that.
 
 	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Do(req)
