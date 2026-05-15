@@ -106,13 +106,7 @@ func Attach(imagePath, udcName string) error {
 // udcName is needed to issue a final soft-disconnect fallback via the UDC sysfs
 // in case the gadget directory was already gone.
 func Detach(udcName string) error {
-	udcSysPath := udcPath + udcName
-
 	if _, err := os.Stat(gadgetDir); os.IsNotExist(err) {
-		// Gadget dir is already gone; send a soft-disconnect via the UDC sysfs
-		// node as a belt-and-suspenders measure to ensure the host sees a clean
-		// disconnect.
-		os.WriteFile(udcSysPath+"/soft_connect", []byte("0"), 0644)
 		return nil
 	}
 
@@ -152,10 +146,6 @@ func Detach(udcName string) error {
 			}
 		}
 	}
-
-	// Final soft-disconnect to ensure the host sees the detach even if the
-	// configfs teardown above succeeded but left the UDC bound.
-	os.WriteFile(udcSysPath+"/soft_connect", []byte("0"), 0644)
 
 	return nil
 }

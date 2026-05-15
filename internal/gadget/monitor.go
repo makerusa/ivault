@@ -80,13 +80,14 @@ func (m *Monitor) Start(ctx context.Context) {
 }
 
 func isPlugged(prev, current string) bool {
-	return !isConfigured(prev) && isConfigured(current)
+	return isNotAttached(prev) && !isNotAttached(current)
 }
 
 func isUnplugged(prev, current string) bool {
-	return isConfigured(prev) && !isConfigured(current)
+	return !isNotAttached(prev) && isNotAttached(current)
 }
 
-func isConfigured(state string) bool {
-	return strings.TrimSpace(state) == "configured"
+func isNotAttached(state string) bool {
+	s := strings.TrimSpace(state)
+	return s == "not attached" || s == "unknown"
 }
