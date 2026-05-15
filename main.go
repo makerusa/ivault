@@ -113,8 +113,17 @@ func main() {
 						}
 
 						sm.Transition(state.StateAttaching)
-						if err := gadget.Load(cfg.ImagePath); err != nil {
-							log.Println("load error:", err)
+						var err error
+						if !gadget.IsAttached() {
+							log.Println("device plugged in — performing first-time gadget attach")
+							err = gadget.Attach(cfg.ImagePath, cfg.UDCName)
+						} else {
+							log.Println("device plugged in — loading disk image")
+							err = gadget.Load(cfg.ImagePath)
+						}
+
+						if err != nil {
+							log.Println("attach/load error:", err)
 							sm.Transition(state.StateError)
 						} else {
 							sm.Transition(state.StateRecording)
@@ -134,13 +143,15 @@ func main() {
 		}
 	}()
 
-	// Attach gadget
+	// Initial attach attempt
 	sm.Transition(state.StateAttaching)
 	if err := gadget.Attach(cfg.ImagePath, cfg.UDCName); err != nil {
-		log.Fatalf("failed to attach gadget: %v", err)
+		log.Printf("initial attach skipped (unplugged or busy): %v", err)
+		sm.Transition(state.StateOffline)
+	} else {
+		sm.Transition(state.StateRecording)
+		log.Println("iVault ready — gadget state:", gadget.State(cfg.UDCName))
 	}
-	sm.Transition(state.StateRecording)
-	log.Println("iVault ready — gadget state:", gadget.State(cfg.UDCName))
 	database.Log("info", "main", "iVault started")
 
 	// Start Heartbeat Agent
