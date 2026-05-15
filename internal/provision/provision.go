@@ -34,6 +34,9 @@ func Process(mountPoint string, cfgPath string) (bool, error) {
 	
 	if _, err := os.Stat(provisionPath); os.IsNotExist(err) {
 		return false, nil // No provision file found, nothing to do
+	} else if err != nil {
+		log.Printf("provision: error checking for file: %v", err)
+		return false, nil
 	}
 
 	log.Println("provision: ivault.provision detected. Starting provisioning sequence...")
