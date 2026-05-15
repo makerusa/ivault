@@ -7,7 +7,8 @@ import (
 type State int
 
 const (
-	StateBooting      State = iota
+	StateProvisioning State = iota
+	StateBooting
 	StateRecording
 	StateDetaching
 	StateMaintenance
@@ -20,6 +21,8 @@ const (
 
 func (s State) String() string {
 	switch s {
+	case StateProvisioning:
+		return "provisioning"
 	case StateBooting:
 		return "booting"
 	case StateRecording:
