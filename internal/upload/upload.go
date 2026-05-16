@@ -1,8 +1,10 @@
 package upload
 
 import (
+	"bufio"
 	"context"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/exec"
@@ -126,9 +128,9 @@ func UploadAll(ctx context.Context, database *db.DB, cfg UploadConfig) ([]string
 func uploadFile(ctx context.Context, src, dst string, target Destination, remoteName string) error {
 	cmd := exec.CommandContext(ctx, "rclone", "copyto",
 		"--config", "/dev/null",
-		"--retries", "3",
-		"--low-level-retries", "10",
-		"--stats", "0",
+		"--retries", "1", // Reduced for faster debugging
+		"--low-level-retries", "1",
+		"--stats", "1s",
 		"-vv",
 		src, dst,
 	)
@@ -153,15 +155,27 @@ func uploadFile(ctx context.Context, src, dst string, target Destination, remote
 		cmd.Env = append(cmd.Env, prefix+"PASS="+obscurePassword(target.Password))
 	}
 
-	out, err := cmd.CombinedOutput()
-	if len(out) > 0 {
-		log.Printf("agent: rclone output:\n%s", string(out))
+	stdout, _ := cmd.StdoutPipe()
+	stderr, _ := cmd.StderrPipe()
+	multi := io.MultiReader(stdout, stderr)
+	
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("rclone start: %w", err)
 	}
+
+	scanner := bufio.NewScanner(multi)
+	go func() {
+		for scanner.Scan() {
+			log.Printf("agent: rclone | %s", scanner.Text())
+		}
+	}()
+
+	err := cmd.Wait()
 	if err != nil {
 		if ctx.Err() != nil {
 			return fmt.Errorf("cancelled")
 		}
-		return fmt.Errorf("rclone: %w — %s", err, string(out))
+		return fmt.Errorf("rclone: %w", err)
 	}
 	return nil
 }
