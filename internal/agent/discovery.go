@@ -2,7 +2,6 @@ package agent
 
 import (
 	"context"
-	"fmt"
 	"log"
 	"net"
 	"sync"
@@ -181,7 +180,7 @@ func (d *Discovery) scanSubnet(ctx context.Context, ipnet *net.IPNet) {
 	baseIP := ipnet.IP.Mask(ipnet.Mask)
 	
 	// We only scan /24 subnets for safety/speed
-	ones, bits := ipnet.Mask.Size()
+	ones, _ := ipnet.Mask.Size()
 	if ones < 24 {
 		log.Printf("discovery: skipping large subnet %v", ipnet)
 		return
