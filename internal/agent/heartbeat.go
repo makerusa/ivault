@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/makerusa/ivault/internal/config"
@@ -100,16 +102,98 @@ func sendHeartbeat(cfg *config.Config, sm *state.Machine) {
 		return
 	}
 
-	// Check for remote commands
+	// Check for remote commands and configuration sync
 	var response struct {
-		Commands []string `json:"commands"`
+		Commands      []string           `json:"commands"`
+		StorageConfig *json.RawMessage   `json:"storageConfig"`
+		Destinations  []json.RawMessage  `json:"destinations"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&response); err == nil {
 		for _, cmd := range response.Commands {
 			if cmd == "trigger_deep_scan" {
-				// Use background context as the scan might outlive the heartbeat cycle
 				go GlobalDiscovery.TriggerDeepScan(context.Background())
+			} else if strings.HasPrefix(cmd, "test_destination:") {
+				destID := strings.TrimPrefix(cmd, "test_destination:")
+				go testDestination(cfg, destID, response.Destinations)
 			}
 		}
+
+		if response.StorageConfig != nil {
+			// TODO: Compare with current hardware state and trigger resize/re-label if needed
+			// log.Printf("agent: received storage config sync: %s", string(*response.StorageConfig))
+		}
+
+		if len(response.Destinations) > 0 {
+			// TODO: Update rclone/upload-queue destinations
+			// log.Printf("agent: received %d active destinations", len(response.Destinations))
+		}
 	}
+}
+
+func testDestination(cfg *config.Config, destID string, rawDests []json.RawMessage) {
+	var targetHost string
+	var targetPort int = 445 // Default SMB
+
+	// Find the destination in the list we just received
+	for _, raw := range rawDests {
+		var d struct {
+			ID   string `json:"id"`
+			Host string `json:"host"`
+			Type string `json:"type"`
+		}
+		if err := json.Unmarshal(raw, &d); err == nil && d.ID == destID {
+			targetHost = d.Host
+			if d.Type == "ftp" {
+				targetPort = 21
+			}
+			break
+		}
+	}
+
+	if targetHost == "" {
+		log.Printf("agent: test failed, destination %s not found in response", destID)
+		return
+	}
+
+	start := time.Now()
+	conn, err := net.DialTimeout("tcp", fmt.Sprintf("%s:%d", targetHost, targetPort), 5*time.Second)
+	latency := time.Since(start).Milliseconds()
+
+	success := err == nil
+	if success {
+		conn.Close()
+		log.Printf("agent: test destination %s (%s) SUCCESS in %dms", destID, targetHost, latency)
+	} else {
+		log.Printf("agent: test destination %s (%s) FAILED: %v", destID, targetHost, err)
+	}
+
+	// Report result back to portal via a separate POST
+	reportTestResult(cfg, destID, success, latency, err)
+}
+
+func reportTestResult(cfg *config.Config, destID string, success bool, latency int64, dialErr error) {
+	msg := "Successfully reached the destination."
+	if !success {
+		msg = fmt.Sprintf("Failed to connect: %v", dialErr)
+	}
+
+	payload := struct {
+		Success   bool   `json:"success"`
+		Message   string `json:"message"`
+		LatencyMs int64  `json:"latencyMs"`
+	}{
+		Success:   success,
+		Message:   msg,
+		LatencyMs: latency,
+	}
+
+	body, _ := json.Marshal(payload)
+	url := fmt.Sprintf("%s/api/devices/%s/destinations/%s/test-result", cfg.CloudEndpoint, cfg.DeviceID, destID)
+
+	req, _ := http.NewRequest("POST", url, bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Device-Key", cfg.DeviceAPIKey)
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	_, _ = client.Do(req)
 }
