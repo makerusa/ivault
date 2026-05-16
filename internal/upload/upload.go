@@ -79,7 +79,7 @@ func UploadAll(ctx context.Context, database *db.DB, cfg UploadConfig) ([]string
 			}
 			target := cfg.Destinations[0]
 
-			remoteName := "ivault-dynamic"
+			remoteName := "remote"
 			dst := fmt.Sprintf("%s:%s/%s", remoteName, target.Subfolder, f.Filename)
 			if target.Type == "smb" {
 				dst = fmt.Sprintf("%s:%s/%s", remoteName, target.Share, filepath.Join(target.Subfolder, f.Filename))
@@ -121,15 +121,17 @@ func UploadAll(ctx context.Context, database *db.DB, cfg UploadConfig) ([]string
 
 func uploadFile(ctx context.Context, src, dst string, target Destination, remoteName string) error {
 	cmd := exec.CommandContext(ctx, "rclone", "copyto",
+		"--config", "/dev/null",
 		"--retries", "3",
 		"--low-level-retries", "10",
 		"--stats", "0",
+		"-vv",
 		src, dst,
 	)
 
 	// Set dynamic rclone configuration via environment variables
 	cmd.Env = os.Environ()
-	prefix := fmt.Sprintf("RCLONE_CONFIG_%s_", strings.ToUpper(strings.ReplaceAll(remoteName, "-", "_")))
+	prefix := "RCLONE_CONFIG_REMOTE_"
 	
 	switch target.Type {
 	case "smb":
