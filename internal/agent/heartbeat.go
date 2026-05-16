@@ -124,8 +124,8 @@ func sendHeartbeat(cfg *config.Config, sm *state.Machine) {
 		}
 
 		if len(response.Destinations) > 0 {
-			// TODO: Update rclone/upload-queue destinations
-			// log.Printf("agent: received %d active destinations", len(response.Destinations))
+			UpdateActiveDestinations(response.Destinations)
+			log.Printf("agent: synced %d active destinations from portal", len(response.Destinations))
 		}
 	}
 }

@@ -294,8 +294,15 @@ func runMaintenance(
 			log.Println("sync complete — waiting for host to plug back in")
 		}
 
-			database.EndSession(sessionID, result.FilesFound, result.FilesCopied, result.BytesCopied, "complete")
+		database.EndSession(sessionID, result.FilesFound, result.FilesCopied, result.BytesCopied, "complete")
 
+		// Check if we actually have anything to upload (new files OR existing queue)
+		queueSize := 0
+		if files, err := os.ReadDir(cfg.UploadQueue); err == nil {
+			queueSize = len(files)
+		}
+
+		if result.FilesCopied > 0 || queueSize > 0 {
 			// Upload in background (network-based, runs regardless of USB state)
 			sm.Transition(state.StateSyncing)
 			go func() {
@@ -315,6 +322,18 @@ func runMaintenance(
 				}
 
 				log.Println("starting upload...")
+				
+				// Fetch latest destinations from agent memory
+				rawDests := agent.GetActiveDestinations()
+				var dests []upload.Destination
+				for _, raw := range rawDests {
+					var d upload.Destination
+					if err := json.Unmarshal(raw, &d); err == nil {
+						dests = append(dests, d)
+					}
+				}
+				uploadCfg.Destinations = dests
+
 				uploaded, err := upload.UploadAll(uploadCtx, database, uploadCfg)
 				if err != nil {
 					log.Println("upload error:", err)
@@ -325,7 +344,11 @@ func runMaintenance(
 				database.Log("info", "upload", fmt.Sprintf("uploaded %d files", len(uploaded)))
 				log.Println("--- maintenance cycle complete ---")
 			}()
-		}()
+		} else {
+			log.Println("nothing to upload — skipping sync state")
+			uploadCancel()
+		}
+	}()
 
 	return uploadCancel
 }
