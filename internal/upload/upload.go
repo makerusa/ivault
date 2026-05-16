@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	"golang.org/x/sync/errgroup"
@@ -62,6 +63,13 @@ func UploadAll(ctx context.Context, database *db.DB, cfg UploadConfig) ([]string
 		sem <- struct{}{} // acquire slot (blocks when all workers are busy)
 		g.Go(func() error {
 			defer func() { <-sem }() // release slot
+
+			src := filepath.Join(cfg.UploadQueue, f.Filename)
+
+			if _, err := os.Stat(src); os.IsNotExist(err) {
+				database.UpdateFileState(f.ID, db.FileAbandoned)
+				return nil
+			}
 
 			// For now, we upload to the FIRST available destination.
 			// In the future, we could iterate through priorities.

@@ -1,4 +1,5 @@
 ivault
+ivault-device-bin
 *.db
 *.db-wal
 *.db-shm
