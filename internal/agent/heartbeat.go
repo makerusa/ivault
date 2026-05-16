@@ -61,14 +61,18 @@ func sendHeartbeat(cfg *config.Config, sm *state.Machine) {
 		log.Printf("agent: failed to collect stats: %v", err)
 	}
 
-	// Include the current device state so the portal dashboard stays in sync.
+	// Include the current device state and discovered local devices.
 	currentStatus := sm.State().String()
+	discovered := GlobalDiscovery.GetDevices()
+
 	payload := struct {
 		Stats
-		Status *string `json:"status"`
+		Status            *string            `json:"status"`
+		DiscoveredDevices []DiscoveredDevice `json:"discoveredDevices"`
 	}{
-		Stats:  stats,
-		Status: &currentStatus,
+		Stats:             stats,
+		Status:            &currentStatus,
+		DiscoveredDevices: discovered,
 	}
 	body, _ := json.Marshal(payload)
 	url := fmt.Sprintf("%s/api/devices/%s/heartbeat", cfg.CloudEndpoint, cfg.DeviceID)
@@ -96,5 +100,16 @@ func sendHeartbeat(cfg *config.Config, sm *state.Machine) {
 		return
 	}
 
-	// We can decode the response to check for remote commands (e.g. reboot, factory reset)
+	// Check for remote commands
+	var response struct {
+		Commands []string `json:"commands"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&response); err == nil {
+		for _, cmd := range response.Commands {
+			if cmd == "trigger_deep_scan" {
+				// Use background context as the scan might outlive the heartbeat cycle
+				go GlobalDiscovery.TriggerDeepScan(context.Background())
+			}
+		}
+	}
 }

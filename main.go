@@ -154,6 +154,9 @@ func main() {
 	}
 	database.Log("info", "main", "iVault started")
 
+	// Start background network discovery
+	agent.GlobalDiscovery.Start(ctx)
+
 	// Start Heartbeat Agent and Log Collection
 	agent.InitLogs(ctx, cfg)
 	agent.Start(ctx, cfg, sm)
