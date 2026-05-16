@@ -44,6 +44,7 @@ func UploadAll(ctx context.Context, database *db.DB, cfg UploadConfig) ([]string
 	if err != nil {
 		return nil, fmt.Errorf("get queued files: %w", err)
 	}
+	log.Printf("agent: upload engine found %d files in the database queue", len(files))
 
 	workers := cfg.Workers
 	if workers <= 0 {
@@ -79,11 +80,14 @@ func UploadAll(ctx context.Context, database *db.DB, cfg UploadConfig) ([]string
 			}
 			target := cfg.Destinations[0]
 
+			log.Printf("agent: targeting destination '%s' (%s) type=%s", target.Name, target.Host, target.Type)
+
 			remoteName := "remote"
 			dst := fmt.Sprintf("%s:%s/%s", remoteName, target.Subfolder, f.Filename)
 			if target.Type == "smb" {
 				dst = fmt.Sprintf("%s:%s/%s", remoteName, target.Share, filepath.Join(target.Subfolder, f.Filename))
 			}
+			log.Printf("agent: rclone destination path: %s", dst)
 
 			database.UpdateFileState(f.ID, db.FileUploading)
 
@@ -150,6 +154,9 @@ func uploadFile(ctx context.Context, src, dst string, target Destination, remote
 	}
 
 	out, err := cmd.CombinedOutput()
+	if len(out) > 0 {
+		log.Printf("agent: rclone output:\n%s", string(out))
+	}
 	if err != nil {
 		if ctx.Err() != nil {
 			return fmt.Errorf("cancelled")
