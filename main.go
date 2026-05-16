@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
@@ -57,11 +58,8 @@ func main() {
 		ConfigPath:  *cfgPath,
 	}
 	uploadCfg := upload.UploadConfig{
-		UploadQueue:  cfg.UploadQueue,
-		RcloneRemote: cfg.RcloneRemote,
-		RclonePath:   cfg.RclonePath,
-		DestID:       1,
-		Workers:      cfg.UploadWorkers,
+		UploadQueue: cfg.UploadQueue,
+		Workers:     cfg.UploadWorkers,
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
