@@ -87,6 +87,7 @@ func UploadAll(ctx context.Context, database *db.DB, cfg UploadConfig) ([]string
 			database.UpdateFileState(f.ID, db.FileUploading)
 
 			if err := uploadFile(gctx, src, dst, target, remoteName); err != nil {
+				log.Printf("agent: upload FAILED for %s to %s: %v", f.Filename, dst, err)
 				if gctx.Err() != nil {
 					// Cancelled — return to queued for retry next cycle
 					database.UpdateFileState(f.ID, db.FileQueued)
