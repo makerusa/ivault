@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"context"
 	"fmt"
-	"io"
 	"log"
 	"os"
 	"os/exec"
@@ -155,22 +154,30 @@ func uploadFile(ctx context.Context, src, dst string, target Destination, remote
 		cmd.Env = append(cmd.Env, prefix+"PASS="+obscurePassword(target.Password))
 	}
 
-	stdout, _ := cmd.StdoutPipe()
-	stderr, _ := cmd.StderrPipe()
-	multi := io.MultiReader(stdout, stderr)
-	
+	r, w, err := os.Pipe()
+	if err != nil {
+		return fmt.Errorf("create pipe: %w", err)
+	}
+	cmd.Stdout = w
+	cmd.Stderr = w
+
 	if err := cmd.Start(); err != nil {
+		w.Close()
+		r.Close()
 		return fmt.Errorf("rclone start: %w", err)
 	}
 
-	scanner := bufio.NewScanner(multi)
+	w.Close()
+
+	scanner := bufio.NewScanner(r)
 	go func() {
 		for scanner.Scan() {
 			log.Printf("agent: rclone | %s", scanner.Text())
 		}
+		r.Close()
 	}()
 
-	err := cmd.Wait()
+	err = cmd.Wait()
 	if err != nil {
 		if ctx.Err() != nil {
 			return fmt.Errorf("cancelled")
