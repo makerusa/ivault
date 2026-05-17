@@ -99,10 +99,10 @@ func main() {
 
 				if event == gadget.UDCPlugged {
 					s := sm.State()
-					if s == state.StateSyncing || s == state.StateDisconnected {
-						if s == state.StateDisconnected {
+					if s == state.StateSyncing || s == state.StateDisconnected || s == state.StateError {
+						if s == state.StateDisconnected || s == state.StateError {
 							log.Println("device plugged in — loading disk image")
-							database.Log("info", "gadget", "device plugged in after disconnect")
+							database.Log("info", "gadget", "device plugged in after disconnect/error")
 						} else {
 							log.Println("device plugged in during sync — interrupting")
 							database.Log("warn", "gadget", "device plugged in during sync — interrupting")
@@ -135,6 +135,9 @@ func main() {
 						if fn := runMaintenance(ctx, sm, database, cfg, ingestCfg, uploadCfg, false); fn != nil {
 							holder.set(fn)
 						}
+					} else if s == state.StateConnecting {
+						log.Println("device unplugged while connecting — transitioning to disconnected")
+						sm.Transition(state.StateDisconnected)
 					}
 				}
 			}
