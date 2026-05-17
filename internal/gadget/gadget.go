@@ -161,6 +161,16 @@ func Eject() error {
 	// Force a kernel sync of the backing file just in case
 	exec.Command("sync").Run()
 
+	// Try forced_eject first if it exists (bypasses host locks/prevent_medium_removal)
+	forcedPath := gadgetDir + "/functions/mass_storage.0/lun.0/forced_eject"
+	if _, err := os.Stat(forcedPath); err == nil {
+		if errWrite := writeFile(forcedPath, "1\n"); errWrite == nil {
+			time.Sleep(200 * time.Millisecond) // brief settle time for ConfigFS
+			return nil
+		}
+	}
+
+	// Fallback to standard eject write loop
 	var err error
 	for i := 0; i < 5; i++ {
 		err = writeFile(path, "\n")
