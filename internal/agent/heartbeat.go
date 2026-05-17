@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -8,7 +9,10 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"os"
+	"os/exec"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/makerusa/ivault/internal/config"
@@ -115,6 +119,9 @@ func sendHeartbeat(cfg *config.Config, sm *state.Machine) {
 			} else if strings.HasPrefix(cmd, "test_destination:") {
 				destID := strings.TrimPrefix(cmd, "test_destination:")
 				go testDestination(cfg, destID, response.Destinations)
+			} else if strings.HasPrefix(cmd, "discover_shares:") {
+				reqJSON := strings.TrimPrefix(cmd, "discover_shares:")
+				go runShareDiscovery(cfg, reqJSON)
 			}
 		}
 
@@ -196,4 +203,144 @@ func reportTestResult(cfg *config.Config, destID string, success bool, latency i
 
 	client := &http.Client{Timeout: 5 * time.Second}
 	_, _ = client.Do(req)
+}
+
+func runShareDiscovery(cfg *config.Config, reqJSON string) {
+	var req struct {
+		Host     string `json:"host"`
+		Username string `json:"username"`
+		Password string `json:"password"`
+		Domain   string `json:"domain"`
+	}
+	if err := json.Unmarshal([]byte(reqJSON), &req); err != nil {
+		log.Printf("agent: failed to unmarshal discover_shares req: %v", err)
+		return
+	}
+
+	log.Printf("agent: running share discovery for %s", req.Host)
+	shares, err := listSharesNatively(req.Host, req.Username, req.Password, req.Domain)
+	var errStr string
+	if err != nil {
+		errStr = err.Error()
+		log.Printf("agent: share discovery failed: %v", err)
+	} else {
+		log.Printf("agent: discovered %d writeable shares", len(shares))
+	}
+
+	reportShareScanResult(cfg, shares, errStr)
+}
+
+func listSharesNatively(host, username, password, domain string) ([]string, error) {
+	cmd := exec.Command("rclone", "lsd", "remote:", "--config", "/dev/null")
+	cmd.Env = os.Environ()
+	prefix := "RCLONE_CONFIG_REMOTE_"
+	cmd.Env = append(cmd.Env, prefix+"TYPE=smb")
+	cmd.Env = append(cmd.Env, prefix+"HOST="+host)
+	cmd.Env = append(cmd.Env, prefix+"USER="+username)
+	cmd.Env = append(cmd.Env, prefix+"PASS="+obscurePassword(password))
+	if domain != "" {
+		cmd.Env = append(cmd.Env, prefix+"DOMAIN="+domain)
+	}
+
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("%v: %s", err, string(out))
+	}
+
+	allShares := []string{}
+	scanner := bufio.NewScanner(bytes.NewReader(out))
+	for scanner.Scan() {
+		line := scanner.Text()
+		parts := strings.Split(line, " -1 ")
+		if len(parts) >= 2 {
+			shareName := strings.TrimSpace(parts[len(parts)-1])
+			if shareName != "" && !strings.HasPrefix(shareName, "@") {
+				allShares = append(allShares, shareName)
+			}
+		}
+	}
+
+	writeable := []string{}
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+
+	for _, s := range allShares {
+		wg.Add(1)
+		go func(share string) {
+			defer wg.Done()
+			if testWriteAccessNatively(host, username, password, domain, share) {
+				mu.Lock()
+				writeable = append(writeable, share)
+				mu.Unlock()
+			}
+		}(s)
+	}
+	wg.Wait()
+
+	return writeable, nil
+}
+
+func testWriteAccessNatively(host, username, password, domain, share string) bool {
+	tempFile, err := os.CreateTemp("", "ivault_write_test_*.txt")
+	if err != nil {
+		return false
+	}
+	defer os.Remove(tempFile.Name())
+	_, _ = tempFile.WriteString("test")
+	_ = tempFile.Close()
+
+	cmd := exec.Command("rclone", "copyto",
+		"--config", "/dev/null",
+		"--retries", "1",
+		"--low-level-retries", "1",
+		tempFile.Name(), "remote:"+share+"/write_test.txt",
+	)
+	cmd.Env = os.Environ()
+	prefix := "RCLONE_CONFIG_REMOTE_"
+	cmd.Env = append(cmd.Env, prefix+"TYPE=smb")
+	cmd.Env = append(cmd.Env, prefix+"HOST="+host)
+	cmd.Env = append(cmd.Env, prefix+"USER="+username)
+	cmd.Env = append(cmd.Env, prefix+"PASS="+obscurePassword(password))
+	if domain != "" {
+		cmd.Env = append(cmd.Env, prefix+"DOMAIN="+domain)
+	}
+
+	if err := cmd.Run(); err != nil {
+		return false
+	}
+
+	delCmd := exec.Command("rclone", "deletefile",
+		"--config", "/dev/null",
+		"remote:"+share+"/write_test.txt",
+	)
+	delCmd.Env = cmd.Env
+	_ = delCmd.Run()
+
+	return true
+}
+
+func reportShareScanResult(cfg *config.Config, shares []string, errStr string) {
+	payload := struct {
+		Shares []string `json:"shares"`
+		Error  string   `json:"error"`
+	}{
+		Shares: shares,
+		Error:  errStr,
+	}
+
+	body, _ := json.Marshal(payload)
+	url := fmt.Sprintf("%s/api/devices/%s/share-scan-result", cfg.CloudEndpoint, cfg.DeviceID)
+
+	req, _ := http.NewRequest("POST", url, bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Device-Key", cfg.DeviceAPIKey)
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	_, _ = client.Do(req)
+}
+
+func obscurePassword(p string) string {
+	cmd := exec.Command("rclone", "obscure", p)
+	out, _ := cmd.Output()
+	return strings.TrimSpace(string(out))
 }
