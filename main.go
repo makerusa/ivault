@@ -229,6 +229,13 @@ func runMaintenance(
 
 		// Eject (makes host see "empty drive")
 		sm.Transition(state.StateDisconnecting)
+		if reattachAfter {
+			log.Println("manually triggered maintenance — soft-disconnecting UDC")
+			if err := gadget.SetUDC(""); err != nil {
+				log.Println("soft-disconnect UDC error:", err)
+			}
+			time.Sleep(500 * time.Millisecond) // brief UDC settle time
+		}
 		if err := gadget.Eject(); err != nil {
 			log.Println("eject error:", err)
 		}
@@ -242,6 +249,7 @@ func runMaintenance(
 			database.Log("error", "ingest", err.Error())
 			if reattachAfter {
 				gadget.Load(cfg.ImagePath)
+				gadget.SetUDC(cfg.UDCName)
 			}
 			database.EndSession(sessionID, 0, 0, 0, "error")
 			if reattachAfter {
@@ -294,6 +302,10 @@ func runMaintenance(
 				sm.Transition(state.StateError)
 				uploadCancel()
 				return
+			}
+			log.Println("re-enabling UDC to soft-connect")
+			if err := gadget.SetUDC(cfg.UDCName); err != nil {
+				log.Println("enable UDC error:", err)
 			}
 			log.Println("gadget reloaded — device connected again")
 		} else {

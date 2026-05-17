@@ -218,6 +218,24 @@ func State(udcName string) string {
 	return strings.TrimSpace(string(b))
 }
 
+// SetUDC binds or unbinds the UDC. Pass empty string to disable the USB gadget.
+func SetUDC(udcName string) error {
+	path := gadgetDir + "/UDC"
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		return fmt.Errorf("gadget not attached")
+	}
+
+	var err error
+	for i := 0; i < 5; i++ {
+		err = writeFile(path, udcName)
+		if err == nil {
+			return nil
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	return err
+}
+
 // IsAttached reports whether the gadget configfs directory exists.
 func IsAttached() bool {
 	_, err := os.Stat(gadgetDir)
