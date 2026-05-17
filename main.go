@@ -237,9 +237,15 @@ func runMaintenance(
 		if err := ingest.Mount(ingestCfg); err != nil {
 			log.Println("mount error:", err)
 			database.Log("error", "ingest", err.Error())
-			gadget.Load(cfg.ImagePath)
+			if reattachAfter {
+				gadget.Load(cfg.ImagePath)
+			}
 			database.EndSession(sessionID, 0, 0, 0, "error")
-			sm.Transition(state.StateConnected)
+			if reattachAfter {
+				sm.Transition(state.StateConnected)
+			} else {
+				sm.Transition(state.StateDisconnected)
+			}
 			uploadCancel()
 			return
 		}
@@ -344,6 +350,11 @@ func runMaintenance(
 			}()
 		} else {
 			log.Println("nothing to upload — skipping sync state")
+			if reattachAfter {
+				sm.Transition(state.StateConnected)
+			} else {
+				sm.Transition(state.StateDisconnected)
+			}
 			uploadCancel()
 		}
 	}()
