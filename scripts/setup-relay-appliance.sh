@@ -4,6 +4,10 @@
 # ==============================================================================
 set -euo pipefail
 
+# Get absolute path of the repository root before any directory changes
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(dirname "$SCRIPT_DIR")"
+
 # 1. Prerequisite Validation
 if [ "$EUID" -ne 0 ]; then
     echo "❌ Error: Please run this script as root (sudo)." >&2
@@ -109,7 +113,7 @@ fi
 
 # 9. Compile & Install Agent Service
 echo "🔨 Compiling and installing Relay daemon..."
-cd "$(dirname "$0")/.."
+cd "$REPO_ROOT"
 GO_BIN="/usr/local/go/bin/go"
 if command -v go >/dev/null 2>&1; then
     GO_BIN="go"
