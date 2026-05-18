@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/makerusa/ivault/internal/config"
@@ -122,17 +123,33 @@ func sendHeartbeat(cfg *config.Config, sm *state.Machine) {
 			} else if strings.HasPrefix(cmd, "discover_shares:") {
 				reqJSON := strings.TrimPrefix(cmd, "discover_shares:")
 				go runShareDiscovery(cfg, reqJSON)
+			} else if cmd == "trigger_sync" {
+				log.Println("agent: received trigger_sync command from portal — triggering maintenance cycle via SIGUSR1")
+				proc, err := os.FindProcess(os.Getpid())
+				if err == nil {
+					_ = proc.Signal(syscall.SIGUSR1)
+				}
 			} else if cmd == "restart_service" {
 				log.Println("agent: received restart_service command from portal")
 				go func() {
 					time.Sleep(1 * time.Second)
-					exec.Command("sudo", "systemctl", "restart", "ivault.service").Start()
+					c := exec.Command("sudo", "systemctl", "restart", "ivault.service")
+					if out, err := c.CombinedOutput(); err != nil {
+						log.Printf("agent: restart_service failed: %v (output: %s)", err, string(out))
+					} else {
+						log.Println("agent: restart_service successfully initiated")
+					}
 				}()
 			} else if cmd == "reboot" {
 				log.Println("agent: received reboot command from portal")
 				go func() {
 					time.Sleep(1 * time.Second)
-					exec.Command("sudo", "reboot").Run()
+					c := exec.Command("sudo", "reboot")
+					if out, err := c.CombinedOutput(); err != nil {
+						log.Printf("agent: reboot failed: %v (output: %s)", err, string(out))
+					} else {
+						log.Println("agent: reboot successfully initiated")
+					}
 				}()
 			} else if cmd == "factory_reset" {
 				log.Println("agent: received factory_reset command from portal — resetting device!")
@@ -387,5 +404,8 @@ func runFactoryReset(cfg *config.Config) {
 
 	// 4. Reboot
 	log.Println("agent: factory reset complete. Rebooting hardware...")
-	exec.Command("sudo", "reboot").Run()
+	c := exec.Command("sudo", "reboot")
+	if out, err := c.CombinedOutput(); err != nil {
+		log.Printf("agent: reboot failed: %v (output: %s)", err, string(out))
+	}
 }
