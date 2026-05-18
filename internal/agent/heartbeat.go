@@ -286,7 +286,7 @@ func listSharesNatively(host, username, password, domain string) ([]string, erro
 		parts := strings.Split(line, " -1 ")
 		if len(parts) >= 2 {
 			shareName := strings.TrimSpace(parts[len(parts)-1])
-			if shareName != "" && !strings.HasPrefix(shareName, "@") {
+			if shareName != "" && !strings.HasPrefix(shareName, "@") && shareName != "relay-storage" {
 				allShares = append(allShares, shareName)
 			}
 		}

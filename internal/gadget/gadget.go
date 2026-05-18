@@ -225,9 +225,15 @@ func SetUDC(udcName string) error {
 		return fmt.Errorf("gadget not attached")
 	}
 
+	// Write newline to unbind instead of 0-byte buffer to avoid Linux kernel EFAULT "bad address"
+	writeVal := udcName
+	if writeVal == "" {
+		writeVal = "\n"
+	}
+
 	var err error
 	for i := 0; i < 5; i++ {
-		err = writeFile(path, udcName)
+		err = writeFile(path, writeVal)
 		if err == nil {
 			return nil
 		}

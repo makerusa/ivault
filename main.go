@@ -99,7 +99,7 @@ func main() {
 
 				if event == gadget.UDCPlugged {
 					s := sm.State()
-					if s == state.StateSyncing || s == state.StateDisconnected || s == state.StateError {
+					if s == state.StateSyncing || s == state.StateSnapshotting || s == state.StateDisconnected || s == state.StateError {
 						if s == state.StateDisconnected || s == state.StateError {
 							log.Println("device plugged in — loading disk image")
 							database.Log("info", "gadget", "device plugged in after disconnect/error")
@@ -210,6 +210,8 @@ func runMaintenance(
 ) context.CancelFunc {
 	s := sm.State()
 	if s == state.StateSyncing ||
+		s == state.StateSnapshotting ||
+		s == state.StateArchiving ||
 		s == state.StateDisconnecting ||
 		s == state.StateConnecting {
 		log.Println("sync already in progress — skipping")
@@ -243,7 +245,7 @@ func runMaintenance(
 		time.Sleep(1 * time.Second)
 
 		// Mount
-		sm.Transition(state.StateSyncing)
+		sm.Transition(state.StateSnapshotting)
 		if err := ingest.Mount(ingestCfg); err != nil {
 			log.Println("mount error:", err)
 			database.Log("error", "ingest", err.Error())
@@ -323,7 +325,7 @@ func runMaintenance(
 
 		if result.FilesCopied > 0 || queueSize > 0 {
 			// Upload in background (network-based, runs regardless of USB state)
-			sm.Transition(state.StateSyncing)
+			sm.Transition(state.StateArchiving)
 			go func() {
 				// Return to the correct state after upload depending on whether
 				// the host was still connected when maintenance ran.

@@ -14,6 +14,8 @@ const (
 	StateDisconnecting
 	StateSyncing
 	StateError
+	StateSnapshotting
+	StateArchiving
 )
 
 func (s State) String() string {
@@ -32,6 +34,10 @@ func (s State) String() string {
 		return "syncing"
 	case StateError:
 		return "error"
+	case StateSnapshotting:
+		return "snapshotting"
+	case StateArchiving:
+		return "archiving"
 	default:
 		return "unknown"
 	}
