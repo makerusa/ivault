@@ -79,39 +79,28 @@ mkdir -p /nvme/ingest /nvme/upload_queue /var/lib/ivault /etc/ivault
 chown -R relay:relay /nvme /var/lib/ivault /etc/ivault
 
 # 6. Configure & Format exFAT OTG drive (nvme0n1)
-echo "🔍 DEBUG: Checking if /dev/nvme0n1 is a block device..."
 if [ -b "/dev/nvme0n1" ]; then
-    echo "🔍 DEBUG: /dev/nvme0n1 IS a block device."
-    OTG_PART="/dev/nvme0n1p1"
-    echo "🔍 DEBUG: Checking if partition $OTG_PART exists..."
+    echo "💾 Configuring OTG drive /dev/nvme0n1..."
     
-    if [ ! -b "$OTG_PART" ]; then
-        echo "🔍 DEBUG: Partition $OTG_PART does NOT exist. Running fdisk..."
-        echo -e "g\nn\n1\n\n\nw" | fdisk /dev/nvme0n1
-        udevadm settle
-        echo "🔍 DEBUG: udevadm settle completed."
-    else
-        echo "🔍 DEBUG: Partition $OTG_PART already exists."
-    fi
-
-    # Format as exFAT if no existing exFAT filesystem is detected
-    echo "🔍 DEBUG: Running blkid to detect filesystem type on $OTG_PART..."
-    FSTYPE=$(blkid -o value -s TYPE "$OTG_PART" || echo "")
-    echo "🔍 DEBUG: Detected FSTYPE='$FSTYPE'"
+    # Check if raw block device is already formatted as exfat (superfloppy)
+    FSTYPE=$(blkid -o value -s TYPE "/dev/nvme0n1" || echo "")
+    echo "🔍 DEBUG: Detected raw device FSTYPE='$FSTYPE'"
     
     if [ "$FSTYPE" != "exfat" ]; then
-        echo "🔍 DEBUG: FSTYPE is not exfat. Triggering mkfs.exfat..."
-        echo "✨ Formatting $OTG_PART as exFAT with label RELAY..."
-        mkfs.exfat -L "RELAY" "$OTG_PART"
-        echo "🔍 DEBUG: mkfs.exfat completed successfully."
+        echo "🧹 Wiping existing partitions and signatures on /dev/nvme0n1..."
+        umount /nvme/ingest 2>/dev/null || true
+        wipefs -a -f /dev/nvme0n1
+        
+        echo "✨ Formatting raw device /dev/nvme0n1 directly as exFAT with label RELAY..."
+        mkfs.exfat -L "RELAY" /dev/nvme0n1
+        echo "🔍 DEBUG: mkfs.exfat on raw device completed successfully."
     else
-        echo "🔍 DEBUG: FSTYPE is already exfat. Setting label..."
-        echo "🏷️ Setting exFAT volume label on OTG drive to 'RELAY'..."
-        exfatlabel "$OTG_PART" RELAY || true
+        echo "🔍 DEBUG: Raw device is already exfat. Setting label..."
+        echo "🏷️ Setting exFAT volume label directly on /dev/nvme0n1 to 'RELAY'..."
+        exfatlabel /dev/nvme0n1 RELAY || true
         echo "🔍 DEBUG: exfatlabel completed."
     fi
 else
-    echo "🔍 DEBUG: /dev/nvme0n1 is NOT a block device."
     echo "⚠️ Warning: OTG NVMe drive /dev/nvme0n1 not found. Skipping OTG auto-format."
 fi
 
