@@ -122,6 +122,21 @@ func sendHeartbeat(cfg *config.Config, sm *state.Machine) {
 			} else if strings.HasPrefix(cmd, "discover_shares:") {
 				reqJSON := strings.TrimPrefix(cmd, "discover_shares:")
 				go runShareDiscovery(cfg, reqJSON)
+			} else if cmd == "restart_service" {
+				log.Println("agent: received restart_service command from portal")
+				go func() {
+					time.Sleep(1 * time.Second)
+					exec.Command("sudo", "systemctl", "restart", "ivault.service").Start()
+				}()
+			} else if cmd == "reboot" {
+				log.Println("agent: received reboot command from portal")
+				go func() {
+					time.Sleep(1 * time.Second)
+					exec.Command("sudo", "reboot").Run()
+				}()
+			} else if cmd == "factory_reset" {
+				log.Println("agent: received factory_reset command from portal — resetting device!")
+				go runFactoryReset(cfg)
 			}
 		}
 
@@ -343,4 +358,34 @@ func obscurePassword(p string) string {
 	cmd := exec.Command("rclone", "obscure", p)
 	out, _ := cmd.Output()
 	return strings.TrimSpace(string(out))
+}
+
+func runFactoryReset(cfg *config.Config) {
+	time.Sleep(1 * time.Second)
+
+	// 1. Wipe config file
+	log.Println("agent: wiping configuration file...")
+	_ = os.Remove("/etc/ivault/config.json")
+
+	// 2. Wipe SQLite database file
+	if cfg.DBPath != "" {
+		log.Printf("agent: wiping database file %s...", cfg.DBPath)
+		_ = os.Remove(cfg.DBPath)
+		_ = os.Remove(cfg.DBPath + "-wal")
+		_ = os.Remove(cfg.DBPath + "-shm")
+	}
+
+	// 3. Clear upload queue files (but keep the directory)
+	if cfg.UploadQueue != "" {
+		log.Printf("agent: clearing upload queue %s...", cfg.UploadQueue)
+		if entries, err := os.ReadDir(cfg.UploadQueue); err == nil {
+			for _, entry := range entries {
+				_ = os.RemoveAll(cfg.UploadQueue + "/" + entry.Name())
+			}
+		}
+	}
+
+	// 4. Reboot
+	log.Println("agent: factory reset complete. Rebooting hardware...")
+	exec.Command("sudo", "reboot").Run()
 }
