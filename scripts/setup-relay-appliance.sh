@@ -84,7 +84,6 @@ if [ -b "/dev/nvme0n1" ]; then
     
     # Check if raw block device is already formatted as exfat (superfloppy)
     FSTYPE=$(blkid -o value -s TYPE "/dev/nvme0n1" || echo "")
-    echo "🔍 DEBUG: Detected raw device FSTYPE='$FSTYPE'"
     
     if [ "$FSTYPE" != "exfat" ]; then
         echo "🧹 Wiping existing partitions and signatures on /dev/nvme0n1..."
@@ -93,12 +92,9 @@ if [ -b "/dev/nvme0n1" ]; then
         
         echo "✨ Formatting raw device /dev/nvme0n1 directly as exFAT with label RELAY..."
         mkfs.exfat -L "RELAY" /dev/nvme0n1
-        echo "🔍 DEBUG: mkfs.exfat on raw device completed successfully."
     else
-        echo "🔍 DEBUG: Raw device is already exfat. Setting label..."
         echo "🏷️ Setting exFAT volume label directly on /dev/nvme0n1 to 'RELAY'..."
         exfatlabel /dev/nvme0n1 RELAY || true
-        echo "🔍 DEBUG: exfatlabel completed."
     fi
 else
     echo "⚠️ Warning: OTG NVMe drive /dev/nvme0n1 not found. Skipping OTG auto-format."
