@@ -22,10 +22,29 @@ type IngestConfig struct {
 }
 
 func Mount(cfg IngestConfig) error {
+	device := cfg.ImagePath
+
+	if strings.HasPrefix(device, "/dev/") {
+		partition := device
+		if _, err := os.Stat(device + "p1"); err == nil {
+			partition = device + "p1"
+		} else if _, err := os.Stat(device + "1"); err == nil {
+			partition = device + "1"
+		}
+
+		cmd := exec.Command("mount", partition, cfg.MountPoint)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			return fmt.Errorf("mount raw device failed: %w — %s", err, string(out))
+		}
+		return nil
+	}
+
+	// Fallback to loop image file mount
 	cmd := exec.Command("mount", "-o", "loop", cfg.ImagePath, cfg.MountPoint)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("mount failed: %w — %s", err, string(out))
+		return fmt.Errorf("mount loop failed: %w — %s", err, string(out))
 	}
 	return nil
 }

@@ -52,9 +52,9 @@ func Attach(imagePath, udcName string) error {
 		return err
 	}
 	stringWrites := map[string]string{
-		"strings/0x409/serialnumber": "ivault-001",
-		"strings/0x409/manufacturer": "iVault",
-		"strings/0x409/product":      "iVault Storage",
+		"strings/0x409/serialnumber": "relay-001",
+		"strings/0x409/manufacturer": "Relay",
+		"strings/0x409/product":      "Relay Storage",
 	}
 	for k, v := range stringWrites {
 		if err := writeFile(gadgetDir+"/"+k, v); err != nil {
