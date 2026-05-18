@@ -71,66 +71,70 @@ func Run(cfg IngestConfig, database *db.DB, sessionID int64) (*IngestResult, boo
 		return nil, false, fmt.Errorf("provisioning failed: %w", err)
 	}
 
-	entries, err := os.ReadDir(cfg.MountPoint)
-	if err != nil {
-		return nil, provisioned, fmt.Errorf("read mount point: %w", err)
-	}
-
-	for _, entry := range entries {
-		if entry.IsDir() {
-			continue
+	err = filepath.WalkDir(cfg.MountPoint, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
 		}
 
-		name := entry.Name()
+		// Skip directories themselves from being processed as files
+		if d.IsDir() {
+			return nil
+		}
 
-		// Skip system/metadata files
-		if isSystemFile(name) {
-			continue
+		// Compute relative path to preserve folder structure
+		relPath, err := filepath.Rel(cfg.MountPoint, path)
+		if err != nil {
+			return fmt.Errorf("failed to get relative path for %s: %w", path, err)
+		}
+
+		// Skip system files, metadata, and hidden directories
+		if isSystemFileOrInHiddenFolder(relPath) {
+			return nil
 		}
 
 		result.FilesFound++
 
-		src := filepath.Join(cfg.MountPoint, name)
-
-		info, err := entry.Info()
+		info, err := d.Info()
 		if err != nil {
-			continue
+			return nil // Skip on stat error
 		}
 
-		// Compute source checksum. This read is unavoidable because we need
-		// the hash before the DB dedup lookup.
-		checksum, err := checksumFile(src)
+		// Compute source checksum
+		checksum, err := checksumFile(path)
 		if err != nil {
-			return result, provisioned, fmt.Errorf("checksum %s: %w", name, err)
+			return fmt.Errorf("checksum %s: %w", relPath, err)
 		}
 
 		// Check if already processed by checksum
 		existing, err := database.GetFileByChecksum(checksum)
 		if err != nil {
-			return result, provisioned, fmt.Errorf("db lookup %s: %w", name, err)
+			return fmt.Errorf("db lookup %s: %w", relPath, err)
 		}
 		if existing != nil {
 			result.Skipped++
-			continue
+			return nil
 		}
 
 		// Record in DB
 		fileID, err := database.InsertFile(&db.File{
 			SessionID:      sessionID,
-			Filename:       name,
+			Filename:       relPath,
 			SizeBytes:      info.Size(),
 			ChecksumSHA256: checksum,
 			State:          db.FileDiscovered,
 		})
 		if err != nil {
-			return result, provisioned, fmt.Errorf("db insert %s: %w", name, err)
+			return fmt.Errorf("db insert %s: %w", relPath, err)
 		}
 
-		// Copy to upload queue, verifying the destination checksum during the
-		// copy itself using io.TeeReader — avoids a third full read of the file.
-		dst := filepath.Join(cfg.UploadQueue, name)
-		if err := copyAndVerify(src, dst, checksum); err != nil {
-			return result, provisioned, fmt.Errorf("copy %s: %w", name, err)
+		// Copy to upload queue
+		dst := filepath.Join(cfg.UploadQueue, relPath)
+		if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
+			return fmt.Errorf("failed to create upload queue directories: %w", err)
+		}
+
+		if err := copyAndVerify(path, dst, checksum); err != nil {
+			return fmt.Errorf("copy %s: %w", relPath, err)
 		}
 
 		// Mark as copied + queued
@@ -139,19 +143,28 @@ func Run(cfg IngestConfig, database *db.DB, sessionID int64) (*IngestResult, boo
 
 		result.FilesCopied++
 		result.BytesCopied += info.Size()
+
+		return nil
+	})
+
+	if err != nil {
+		return result, provisioned, err
 	}
 
 	return result, provisioned, nil
 }
 
-func isSystemFile(name string) bool {
-	return strings.HasPrefix(name, "._") ||
-		strings.HasPrefix(name, ".") ||
-		name == ".DS_Store" ||
-		name == ".Spotlight-V100" ||
-		name == ".fseventsd" ||
-		name == "ivault.provision" ||
-		name == "ivault-provision.json"
+func isSystemFileOrInHiddenFolder(relPath string) bool {
+	parts := strings.Split(relPath, string(filepath.Separator))
+	for _, part := range parts {
+		if strings.HasPrefix(part, ".") || strings.HasPrefix(part, "._") {
+			return true
+		}
+		if part == "ivault.provision" || part == "ivault-provision.json" {
+			return true
+		}
+	}
+	return false
 }
 
 // copyAndVerify copies src to dst while simultaneously computing the SHA-256
