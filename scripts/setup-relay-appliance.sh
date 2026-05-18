@@ -16,6 +16,13 @@ fi
 
 echo "🚀 Starting Relay Appliance initialization..."
 
+# Stop existing service if running to release hardware locks
+if systemctl is-active --quiet ivault.service; then
+    echo "🛑 Stopping ivault.service to release storage and USB gadget locks..."
+    systemctl stop ivault.service
+    sleep 2
+fi
+
 # 2. Hostname setup
 echo "📝 Configuring network hostname..."
 hostnamectl set-hostname relay
