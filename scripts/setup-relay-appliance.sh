@@ -71,10 +71,27 @@ fi
 mkdir -p /nvme/ingest /nvme/upload_queue /var/lib/ivault /etc/ivault
 chown -R relay:relay /nvme /var/lib/ivault /etc/ivault
 
-# 6. Configure exFAT OTG drive label
-if [ -b "/dev/nvme0n1p1" ]; then
-    echo "🏷️ Setting exFAT volume label on OTG drive to 'RELAY'..."
-    exfatlabel /dev/nvme0n1p1 RELAY || true
+# 6. Configure & Format exFAT OTG drive (nvme0n1)
+if [ -b "/dev/nvme0n1" ]; then
+    echo "💾 Configuring OTG drive /dev/nvme0n1..."
+    OTG_PART="/dev/nvme0n1p1"
+    
+    if [ ! -b "$OTG_PART" ]; then
+        echo "🔨 Partitioning OTG drive /dev/nvme0n1..."
+        echo -e "g\nn\n1\n\n\nw" | fdisk /dev/nvme0n1
+        udevadm settle
+    fi
+
+    # Format as exFAT if no existing filesystem is detected
+    if ! blkid "$OTG_PART" >/dev/null; then
+        echo "✨ Formatting $OTG_PART as exFAT with label RELAY..."
+        mkfs.exfat -L "RELAY" "$OTG_PART"
+    else
+        echo "🏷️ Setting exFAT volume label on OTG drive to 'RELAY'..."
+        exfatlabel "$OTG_PART" RELAY || true
+    fi
+else
+    echo "⚠️ Warning: OTG NVMe drive /dev/nvme0n1 not found. Skipping OTG auto-format."
 fi
 
 # 7. Configure Samba NAS Share
