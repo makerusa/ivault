@@ -96,6 +96,7 @@ func (c *LogCollector) push() {
 
 	req, err := http.NewRequest("POST", url, bytes.NewBuffer(body))
 	if err != nil {
+		fmt.Fprintf(os.Stderr, "agent log push req creation error: %v\n", err)
 		return
 	}
 
@@ -106,7 +107,12 @@ func (c *LogCollector) push() {
 	client := &http.Client{Timeout: 5 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
+		fmt.Fprintf(os.Stderr, "agent log push network error: %v\n", err)
 		return
 	}
 	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		fmt.Fprintf(os.Stderr, "agent log push failed with status: %d\n", resp.StatusCode)
+	}
 }
