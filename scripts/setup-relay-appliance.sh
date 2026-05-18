@@ -89,8 +89,9 @@ if [ -b "/dev/nvme0n1" ]; then
         udevadm settle
     fi
 
-    # Format as exFAT if no existing filesystem is detected
-    if ! blkid "$OTG_PART" >/dev/null; then
+    # Format as exFAT if no existing exFAT filesystem is detected
+    FSTYPE=$(blkid -o value -s TYPE "$OTG_PART" || echo "")
+    if [ "$FSTYPE" != "exfat" ]; then
         echo "✨ Formatting $OTG_PART as exFAT with label RELAY..."
         mkfs.exfat -L "RELAY" "$OTG_PART"
     else
