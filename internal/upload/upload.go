@@ -152,6 +152,18 @@ func uploadFile(ctx context.Context, src, dst string, target Destination, remote
 		cmd.Env = append(cmd.Env, prefix+"HOST="+target.Host)
 		cmd.Env = append(cmd.Env, prefix+"USER="+target.Username)
 		cmd.Env = append(cmd.Env, prefix+"PASS="+obscurePassword(target.Password))
+	case "google_drive":
+		cmd.Env = append(cmd.Env, prefix+"TYPE=drive")
+		cmd.Env = append(cmd.Env, prefix+"SCOPE=drive.file")
+		if clientID := os.Getenv("GOOGLE_CLIENT_ID"); clientID != "" {
+			cmd.Env = append(cmd.Env, prefix+"CLIENT_ID="+clientID)
+		}
+		if clientSecret := os.Getenv("GOOGLE_CLIENT_SECRET"); clientSecret != "" {
+			cmd.Env = append(cmd.Env, prefix+"CLIENT_SECRET="+clientSecret)
+		}
+		tokenJSON := fmt.Sprintf(`{"access_token":"","token_type":"Bearer","refresh_token":"%s","expiry":"0001-01-01T00:00:00Z"}`, target.Password)
+		cmd.Env = append(cmd.Env, prefix+"TOKEN="+tokenJSON)
+		cmd.Env = append(cmd.Env, prefix+"ROOT_FOLDER_ID="+target.Subfolder)
 	}
 
 	r, w, err := os.Pipe()
