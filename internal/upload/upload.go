@@ -38,6 +38,25 @@ type Destination struct {
 	ClientSecret string `json:"client_secret"`
 }
 
+// MaskSecret safely masks a secret key/token/password for logging purposes.
+func MaskSecret(s string) string {
+	if s == "" {
+		return "<empty>"
+	}
+	if len(s) <= 8 {
+		return fmt.Sprintf("<present, len=%d>", len(s))
+	}
+	return fmt.Sprintf("%s...%s (len=%d)", s[:4], s[len(s)-4:], len(s))
+}
+
+// LogDetails logs metadata about the destination while keeping credentials masked.
+func (d Destination) LogDetails(prefix string) {
+	log.Printf("%s - Destination ID=%q, Name=%q, Type=%q, Host=%q, Subfolder=%q, Username=%q",
+		prefix, d.ID, d.Name, d.Type, d.Host, d.Subfolder, d.Username)
+	log.Printf("%s - Credentials details: HasPassword=%t (%s), HasClientID=%t (%s), HasClientSecret=%t (%s)",
+		prefix, d.Password != "", MaskSecret(d.Password), d.ClientID != "", MaskSecret(d.ClientID), d.ClientSecret != "", MaskSecret(d.ClientSecret))
+}
+
 // UploadAll uploads all queued files using a bounded worker pool and returns
 // the names of successfully uploaded files.
 // If the context is cancelled, in-flight uploads are interrupted and their
@@ -166,24 +185,46 @@ func uploadFile(ctx context.Context, src, dst string, target Destination, remote
 		addEnv("SCOPE", "drive.file")
 		
 		clientID := target.ClientID
+		log.Printf("agent: [upload-debug] evaluating google_drive ClientID:")
+		log.Printf("  - Destination ClientID from Portal: %s", MaskSecret(target.ClientID))
+		log.Printf("  - System GOOGLE_CLIENT_ID from Env: %s", MaskSecret(os.Getenv("GOOGLE_CLIENT_ID")))
+		
 		if clientID == "" {
 			clientID = os.Getenv("GOOGLE_CLIENT_ID")
+			log.Printf("  - Result: Using GOOGLE_CLIENT_ID from environment")
+		} else {
+			log.Printf("  - Result: Using ClientID provided dynamically by Portal")
 		}
 		if clientID != "" {
 			addEnv("CLIENT_ID", clientID)
+			log.Printf("  - Set CLIENT_ID: %s", MaskSecret(clientID))
+		} else {
+			log.Printf("  - WARNING: No CLIENT_ID is set!")
 		}
 
 		clientSecret := target.ClientSecret
+		log.Printf("agent: [upload-debug] evaluating google_drive ClientSecret:")
+		log.Printf("  - Destination ClientSecret from Portal: %s", MaskSecret(target.ClientSecret))
+		log.Printf("  - System GOOGLE_CLIENT_SECRET from Env: %s", MaskSecret(os.Getenv("GOOGLE_CLIENT_SECRET")))
+		
 		if clientSecret == "" {
 			clientSecret = os.Getenv("GOOGLE_CLIENT_SECRET")
+			log.Printf("  - Result: Using GOOGLE_CLIENT_SECRET from environment")
+		} else {
+			log.Printf("  - Result: Using ClientSecret provided dynamically by Portal")
 		}
 		if clientSecret != "" {
 			addEnv("CLIENT_SECRET", clientSecret)
+			log.Printf("  - Set CLIENT_SECRET: %s", MaskSecret(clientSecret))
+		} else {
+			log.Printf("  - WARNING: No CLIENT_SECRET is set!")
 		}
 
 		tokenJSON := fmt.Sprintf(`{"access_token":"","token_type":"Bearer","refresh_token":"%s","expiry":"0001-01-01T00:00:00Z"}`, target.Password)
 		addEnv("TOKEN", tokenJSON)
-		addEnv("ROOT_FOLDER_ID", target.Subfolder)
+		log.Printf("agent: [upload-debug] evaluating google_drive token:")
+		log.Printf("  - Set TOKEN using refresh_token: %s", MaskSecret(target.Password))
+		log.Printf("  - Set ROOT_FOLDER_ID: %s", target.Subfolder)
 	}
 
 	// Log the environment variables set for debugging, obscuring sensitive data.

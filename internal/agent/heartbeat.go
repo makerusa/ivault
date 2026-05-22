@@ -19,6 +19,7 @@ import (
 	"github.com/makerusa/ivault/internal/config"
 	"github.com/makerusa/ivault/internal/db"
 	"github.com/makerusa/ivault/internal/state"
+	"github.com/makerusa/ivault/internal/upload"
 )
 
 // Start begins the heartbeat loop in a background goroutine.
@@ -31,10 +32,18 @@ func Start(ctx context.Context, cfg *config.Config, sm *state.Machine, database 
 
 	// Load persisted destinations on startup for offline resilience
 	if val, err := database.GetConfig("active_destinations"); err == nil && val != "" {
-		var dests []json.RawMessage
-		if err := json.Unmarshal([]byte(val), &dests); err == nil {
-			UpdateActiveDestinations(dests)
-			log.Printf("agent: loaded %d persisted active destinations from local database", len(dests))
+		var rawDests []json.RawMessage
+		if err := json.Unmarshal([]byte(val), &rawDests); err == nil {
+			UpdateActiveDestinations(rawDests)
+			log.Printf("agent: loaded %d persisted active destinations from local database config table", len(rawDests))
+			for i, raw := range rawDests {
+				var d upload.Destination
+				if err := json.Unmarshal(raw, &d); err == nil {
+					d.LogDetails(fmt.Sprintf("agent: [startup-load] Destination #%d", i+1))
+				} else {
+					log.Printf("agent: [startup-load] failed to parse destination #%d: %v", i+1, err)
+				}
+			}
 		} else {
 			log.Printf("agent: failed to unmarshal persisted active destinations: %v", err)
 		}
@@ -177,12 +186,23 @@ func sendHeartbeat(cfg *config.Config, sm *state.Machine, database *db.DB) {
 		if len(response.Destinations) > 0 {
 			UpdateActiveDestinations(response.Destinations)
 			log.Printf("agent: synced %d active destinations from portal", len(response.Destinations))
+			for i, raw := range response.Destinations {
+				var d upload.Destination
+				if err := json.Unmarshal(raw, &d); err == nil {
+					d.LogDetails(fmt.Sprintf("agent: [portal-sync] Destination #%d", i+1))
+				} else {
+					log.Printf("agent: [portal-sync] failed to parse destination #%d: %v", i+1, err)
+				}
+			}
 			
 			// Persist dynamic destinations to local database config table for offline startup resilience
+			log.Printf("agent: persisting %d active destinations to local SQLite database config table...", len(response.Destinations))
 			bytes, err := json.Marshal(response.Destinations)
 			if err == nil {
 				if err := database.SetConfig("active_destinations", string(bytes)); err != nil {
 					log.Printf("agent: failed to persist active destinations to local database: %v", err)
+				} else {
+					log.Println("agent: successfully persisted active destinations to local SQLite database config table")
 				}
 			}
 		}

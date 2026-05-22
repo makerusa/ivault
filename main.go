@@ -346,11 +346,15 @@ func runMaintenance(
 				
 				// Fetch latest destinations from agent memory
 				rawDests := agent.GetActiveDestinations()
+				log.Printf("agent: fetching latest active destinations from agent memory to start upload: count=%d", len(rawDests))
 				var dests []upload.Destination
-				for _, raw := range rawDests {
+				for i, raw := range rawDests {
 					var d upload.Destination
 					if err := json.Unmarshal(raw, &d); err == nil {
+						d.LogDetails(fmt.Sprintf("agent: [upload-prep] Destination #%d", i+1))
 						dests = append(dests, d)
+					} else {
+						log.Printf("agent: [upload-prep] failed to parse destination #%d: %v", i+1, err)
 					}
 				}
 				uploadCfg.Destinations = dests
