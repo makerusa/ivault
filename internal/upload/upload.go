@@ -105,9 +105,13 @@ func UploadAll(ctx context.Context, database *db.DB, cfg UploadConfig) ([]string
 			log.Printf("agent: targeting destination '%s' (%s) type=%s", target.Name, target.Host, target.Type)
 
 			remoteName := "REMOTE"
-			dst := fmt.Sprintf("%s:%s/%s", remoteName, target.Subfolder, f.Filename)
-			if target.Type == "smb" {
+			var dst string
+			if target.Type == "google_drive" {
+				dst = fmt.Sprintf("%s:%s", remoteName, f.Filename)
+			} else if target.Type == "smb" {
 				dst = fmt.Sprintf("%s:%s/%s", remoteName, target.Share, filepath.Join(target.Subfolder, f.Filename))
+			} else {
+				dst = fmt.Sprintf("%s:%s/%s", remoteName, target.Subfolder, f.Filename)
 			}
 			log.Printf("agent: rclone destination path: %s", dst)
 
