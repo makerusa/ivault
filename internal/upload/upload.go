@@ -24,16 +24,18 @@ type UploadConfig struct {
 }
 
 type Destination struct {
-	ID         string `json:"id"`
-	Name       string `json:"name"`
-	Type       string `json:"type"` // "smb", "sftp", "ftp", "google_drive"
-	Host       string `json:"host"`
-	Share      string `json:"share"`
-	Subfolder  string `json:"subfolder"`
-	Username   string `json:"username"`
-	Password   string `json:"password"`
-	Domain     string `json:"domain"`
-	Path       string `json:"path"`
+	ID           string `json:"id"`
+	Name         string `json:"name"`
+	Type         string `json:"type"` // "smb", "sftp", "ftp", "google_drive"
+	Host         string `json:"host"`
+	Share        string `json:"share"`
+	Subfolder    string `json:"subfolder"`
+	Username     string `json:"username"`
+	Password     string `json:"password"`
+	Domain       string `json:"domain"`
+	Path         string `json:"path"`
+	ClientID     string `json:"client_id"`
+	ClientSecret string `json:"client_secret"`
 }
 
 // UploadAll uploads all queued files using a bounded worker pool and returns
@@ -83,7 +85,7 @@ func UploadAll(ctx context.Context, database *db.DB, cfg UploadConfig) ([]string
 
 			log.Printf("agent: targeting destination '%s' (%s) type=%s", target.Name, target.Host, target.Type)
 
-			remoteName := "remote"
+			remoteName := "REMOTE"
 			dst := fmt.Sprintf("%s:%s/%s", remoteName, target.Subfolder, f.Filename)
 			if target.Type == "smb" {
 				dst = fmt.Sprintf("%s:%s/%s", remoteName, target.Share, filepath.Join(target.Subfolder, f.Filename))
@@ -136,34 +138,69 @@ func uploadFile(ctx context.Context, src, dst string, target Destination, remote
 
 	// Set dynamic rclone configuration via environment variables
 	cmd.Env = os.Environ()
-	prefix := "RCLONE_CONFIG_REMOTE_"
 	
+	upperRemote := strings.ToUpper(remoteName)
+	lowerRemote := strings.ToLower(remoteName)
+	
+	addEnv := func(key, value string) {
+		cmd.Env = append(cmd.Env, fmt.Sprintf("RCLONE_CONFIG_%s_%s=%s", upperRemote, key, value))
+		cmd.Env = append(cmd.Env, fmt.Sprintf("RCLONE_CONFIG_%s_%s=%s", lowerRemote, key, value))
+	}
+
 	switch target.Type {
 	case "smb":
-		cmd.Env = append(cmd.Env, prefix+"TYPE=smb")
-		cmd.Env = append(cmd.Env, prefix+"HOST="+target.Host)
-		cmd.Env = append(cmd.Env, prefix+"USER="+target.Username)
-		cmd.Env = append(cmd.Env, prefix+"PASS="+obscurePassword(target.Password))
+		addEnv("TYPE", "smb")
+		addEnv("HOST", target.Host)
+		addEnv("USER", target.Username)
+		addEnv("PASS", obscurePassword(target.Password))
 		if target.Domain != "" {
-			cmd.Env = append(cmd.Env, prefix+"DOMAIN="+target.Domain)
+			addEnv("DOMAIN", target.Domain)
 		}
 	case "sftp":
-		cmd.Env = append(cmd.Env, prefix+"TYPE=sftp")
-		cmd.Env = append(cmd.Env, prefix+"HOST="+target.Host)
-		cmd.Env = append(cmd.Env, prefix+"USER="+target.Username)
-		cmd.Env = append(cmd.Env, prefix+"PASS="+obscurePassword(target.Password))
+		addEnv("TYPE", "sftp")
+		addEnv("HOST", target.Host)
+		addEnv("USER", target.Username)
+		addEnv("PASS", obscurePassword(target.Password))
 	case "google_drive":
-		cmd.Env = append(cmd.Env, prefix+"TYPE=drive")
-		cmd.Env = append(cmd.Env, prefix+"SCOPE=drive.file")
-		if clientID := os.Getenv("GOOGLE_CLIENT_ID"); clientID != "" {
-			cmd.Env = append(cmd.Env, prefix+"CLIENT_ID="+clientID)
+		addEnv("TYPE", "drive")
+		addEnv("SCOPE", "drive.file")
+		
+		clientID := target.ClientID
+		if clientID == "" {
+			clientID = os.Getenv("GOOGLE_CLIENT_ID")
 		}
-		if clientSecret := os.Getenv("GOOGLE_CLIENT_SECRET"); clientSecret != "" {
-			cmd.Env = append(cmd.Env, prefix+"CLIENT_SECRET="+clientSecret)
+		if clientID != "" {
+			addEnv("CLIENT_ID", clientID)
 		}
+
+		clientSecret := target.ClientSecret
+		if clientSecret == "" {
+			clientSecret = os.Getenv("GOOGLE_CLIENT_SECRET")
+		}
+		if clientSecret != "" {
+			addEnv("CLIENT_SECRET", clientSecret)
+		}
+
 		tokenJSON := fmt.Sprintf(`{"access_token":"","token_type":"Bearer","refresh_token":"%s","expiry":"0001-01-01T00:00:00Z"}`, target.Password)
-		cmd.Env = append(cmd.Env, prefix+"TOKEN="+tokenJSON)
-		cmd.Env = append(cmd.Env, prefix+"ROOT_FOLDER_ID="+target.Subfolder)
+		addEnv("TOKEN", tokenJSON)
+		addEnv("ROOT_FOLDER_ID", target.Subfolder)
+	}
+
+	// Log the environment variables set for debugging, obscuring sensitive data.
+	log.Printf("agent: running rclone command: %s", cmd.String())
+	log.Println("agent: rclone configuration environment variables:")
+	for _, env := range cmd.Env {
+		if strings.HasPrefix(env, "RCLONE_CONFIG_") {
+			parts := strings.SplitN(env, "=", 2)
+			if len(parts) == 2 {
+				key, val := parts[0], parts[1]
+				// Obscure password, token, or client secret for security
+				if strings.Contains(key, "_PASS") || strings.Contains(key, "_TOKEN") || strings.Contains(key, "_CLIENT_SECRET") {
+					val = "[REDACTED]"
+				}
+				log.Printf("  %s=%s", key, val)
+			}
+		}
 	}
 
 	r, w, err := os.Pipe()

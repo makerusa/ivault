@@ -17,15 +17,27 @@ import (
 	"time"
 
 	"github.com/makerusa/ivault/internal/config"
+	"github.com/makerusa/ivault/internal/db"
 	"github.com/makerusa/ivault/internal/state"
 )
 
 // Start begins the heartbeat loop in a background goroutine.
 // sm is used to read the current device state for each heartbeat.
-func Start(ctx context.Context, cfg *config.Config, sm *state.Machine) {
+func Start(ctx context.Context, cfg *config.Config, sm *state.Machine, database *db.DB) {
 	if cfg.DeviceID == "" || cfg.DeviceAPIKey == "" || cfg.CloudEndpoint == "" {
 		log.Println("agent: device not provisioned, skipping heartbeat")
 		return
+	}
+
+	// Load persisted destinations on startup for offline resilience
+	if val, err := database.GetConfig("active_destinations"); err == nil && val != "" {
+		var dests []json.RawMessage
+		if err := json.Unmarshal([]byte(val), &dests); err == nil {
+			UpdateActiveDestinations(dests)
+			log.Printf("agent: loaded %d persisted active destinations from local database", len(dests))
+		} else {
+			log.Printf("agent: failed to unmarshal persisted active destinations: %v", err)
+		}
 	}
 
 	log.Printf("agent: starting heartbeat loop for device %s", cfg.DeviceID)
@@ -45,7 +57,7 @@ func Start(ctx context.Context, cfg *config.Config, sm *state.Machine) {
 		})
 
 		// Send initial heartbeat
-		sendHeartbeat(cfg, sm)
+		sendHeartbeat(cfg, sm, database)
 
 		for {
 			select {
@@ -53,16 +65,16 @@ func Start(ctx context.Context, cfg *config.Config, sm *state.Machine) {
 				log.Println("agent: stopping heartbeat loop")
 				return
 			case <-ticker.C:
-				sendHeartbeat(cfg, sm)
+				sendHeartbeat(cfg, sm, database)
 			case <-trigger:
 				log.Println("agent: triggering priority heartbeat due to state change")
-				sendHeartbeat(cfg, sm)
+				sendHeartbeat(cfg, sm, database)
 			}
 		}
 	}()
 }
 
-func sendHeartbeat(cfg *config.Config, sm *state.Machine) {
+func sendHeartbeat(cfg *config.Config, sm *state.Machine, database *db.DB) {
 	stats, err := CollectStats("/nvme", cfg.ImagePath, cfg.UploadQueue)
 	if err != nil {
 		log.Printf("agent: failed to collect stats: %v", err)
@@ -165,6 +177,14 @@ func sendHeartbeat(cfg *config.Config, sm *state.Machine) {
 		if len(response.Destinations) > 0 {
 			UpdateActiveDestinations(response.Destinations)
 			log.Printf("agent: synced %d active destinations from portal", len(response.Destinations))
+			
+			// Persist dynamic destinations to local database config table for offline startup resilience
+			bytes, err := json.Marshal(response.Destinations)
+			if err == nil {
+				if err := database.SetConfig("active_destinations", string(bytes)); err != nil {
+					log.Printf("agent: failed to persist active destinations to local database: %v", err)
+				}
+			}
 		}
 	}
 }
@@ -263,15 +283,20 @@ func runShareDiscovery(cfg *config.Config, reqJSON string) {
 }
 
 func listSharesNatively(host, username, password, domain string) ([]string, error) {
-	cmd := exec.Command("rclone", "lsd", "remote:", "--config", "/dev/null")
+	cmd := exec.Command("rclone", "lsd", "REMOTE:", "--config", "/dev/null")
 	cmd.Env = os.Environ()
-	prefix := "RCLONE_CONFIG_REMOTE_"
-	cmd.Env = append(cmd.Env, prefix+"TYPE=smb")
-	cmd.Env = append(cmd.Env, prefix+"HOST="+host)
-	cmd.Env = append(cmd.Env, prefix+"USER="+username)
-	cmd.Env = append(cmd.Env, prefix+"PASS="+obscurePassword(password))
+	
+	addEnv := func(key, value string) {
+		cmd.Env = append(cmd.Env, "RCLONE_CONFIG_REMOTE_"+key+"="+value)
+		cmd.Env = append(cmd.Env, "RCLONE_CONFIG_remote_"+key+"="+value)
+	}
+
+	addEnv("TYPE", "smb")
+	addEnv("HOST", host)
+	addEnv("USER", username)
+	addEnv("PASS", obscurePassword(password))
 	if domain != "" {
-		cmd.Env = append(cmd.Env, prefix+"DOMAIN="+domain)
+		addEnv("DOMAIN", domain)
 	}
 
 	out, err := cmd.CombinedOutput()
@@ -325,16 +350,21 @@ func testWriteAccessNatively(host, username, password, domain, share string) boo
 		"--config", "/dev/null",
 		"--retries", "1",
 		"--low-level-retries", "1",
-		tempFile.Name(), "remote:"+share+"/write_test.txt",
+		tempFile.Name(), "REMOTE:"+share+"/write_test.txt",
 	)
 	cmd.Env = os.Environ()
-	prefix := "RCLONE_CONFIG_REMOTE_"
-	cmd.Env = append(cmd.Env, prefix+"TYPE=smb")
-	cmd.Env = append(cmd.Env, prefix+"HOST="+host)
-	cmd.Env = append(cmd.Env, prefix+"USER="+username)
-	cmd.Env = append(cmd.Env, prefix+"PASS="+obscurePassword(password))
+	
+	addEnv := func(key, value string) {
+		cmd.Env = append(cmd.Env, "RCLONE_CONFIG_REMOTE_"+key+"="+value)
+		cmd.Env = append(cmd.Env, "RCLONE_CONFIG_remote_"+key+"="+value)
+	}
+
+	addEnv("TYPE", "smb")
+	addEnv("HOST", host)
+	addEnv("USER", username)
+	addEnv("PASS", obscurePassword(password))
 	if domain != "" {
-		cmd.Env = append(cmd.Env, prefix+"DOMAIN="+domain)
+		addEnv("DOMAIN", domain)
 	}
 
 	if err := cmd.Run(); err != nil {
@@ -343,7 +373,7 @@ func testWriteAccessNatively(host, username, password, domain, share string) boo
 
 	delCmd := exec.Command("rclone", "deletefile",
 		"--config", "/dev/null",
-		"remote:"+share+"/write_test.txt",
+		"REMOTE:"+share+"/write_test.txt",
 	)
 	delCmd.Env = cmd.Env
 	_ = delCmd.Run()

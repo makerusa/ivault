@@ -160,7 +160,7 @@ func main() {
 
 	// Start Heartbeat Agent and Log Collection
 	agent.InitLogs(ctx, cfg)
-	agent.Start(ctx, cfg, sm)
+	agent.Start(ctx, cfg, sm, database)
 
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, syscall.SIGTERM, syscall.SIGINT, syscall.SIGUSR1)
@@ -280,7 +280,7 @@ func runMaintenance(
 			newCfg, err := config.LoadOrDefault(ingestCfg.ConfigPath)
 			if err == nil {
 				*cfg = *newCfg
-				agent.Start(ctx, cfg, sm)
+				agent.Start(ctx, cfg, sm, database)
 			}
 		}
 
