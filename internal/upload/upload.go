@@ -68,6 +68,34 @@ func UploadAll(ctx context.Context, database *db.DB, cfg UploadConfig) ([]string
 	}
 	log.Printf("agent: upload engine found %d files in the database queue", len(files))
 
+	if len(files) == 0 {
+		return nil, nil
+	}
+
+	// Validate destinations up front before pre-creating directories.
+	if len(cfg.Destinations) == 0 {
+		return nil, fmt.Errorf("no active destinations configured")
+	}
+	target := cfg.Destinations[0]
+
+	// Extract unique parent directories of queued files to pre-create sequentially.
+	// This avoids duplicate folder creation race conditions on target systems (like Google Drive).
+	uniqueDirs := make(map[string]bool)
+	for _, f := range files {
+		dir := filepath.ToSlash(filepath.Dir(f.Filename))
+		if dir != "." && dir != "/" && dir != "" {
+			uniqueDirs[dir] = true
+		}
+	}
+
+	remoteName := "REMOTE"
+	for dir := range uniqueDirs {
+		log.Printf("agent: pre-creating remote directory: %s:%s", remoteName, dir)
+		if err := createRemoteDir(ctx, dir, target, remoteName); err != nil {
+			log.Printf("agent: warning: failed to pre-create remote directory %s:%s: %v", remoteName, dir, err)
+		}
+	}
+
 	workers := cfg.Workers
 	if workers <= 0 {
 		workers = 2
@@ -95,16 +123,8 @@ func UploadAll(ctx context.Context, database *db.DB, cfg UploadConfig) ([]string
 				return nil
 			}
 
-			// For now, we upload to the FIRST available destination.
-			// In the future, we could iterate through priorities.
-			if len(cfg.Destinations) == 0 {
-				return fmt.Errorf("no active destinations configured")
-			}
-			target := cfg.Destinations[0]
-
 			log.Printf("agent: targeting destination '%s' (%s) type=%s", target.Name, target.Host, target.Type)
 
-			remoteName := "REMOTE"
 			var dst string
 			if target.Type == "google_drive" {
 				dst = fmt.Sprintf("%s:%s", remoteName, f.Filename)
@@ -159,95 +179,7 @@ func uploadFile(ctx context.Context, src, dst string, target Destination, remote
 		src, dst,
 	)
 
-	// Set dynamic rclone configuration via environment variables
-	cmd.Env = os.Environ()
-	
-	upperRemote := strings.ToUpper(remoteName)
-	lowerRemote := strings.ToLower(remoteName)
-	
-	addEnv := func(key, value string) {
-		cmd.Env = append(cmd.Env, fmt.Sprintf("RCLONE_CONFIG_%s_%s=%s", upperRemote, key, value))
-		cmd.Env = append(cmd.Env, fmt.Sprintf("RCLONE_CONFIG_%s_%s=%s", lowerRemote, key, value))
-	}
-
-	switch target.Type {
-	case "smb":
-		addEnv("TYPE", "smb")
-		addEnv("HOST", target.Host)
-		addEnv("USER", target.Username)
-		addEnv("PASS", obscurePassword(target.Password))
-		if target.Domain != "" {
-			addEnv("DOMAIN", target.Domain)
-		}
-	case "sftp":
-		addEnv("TYPE", "sftp")
-		addEnv("HOST", target.Host)
-		addEnv("USER", target.Username)
-		addEnv("PASS", obscurePassword(target.Password))
-	case "google_drive":
-		addEnv("TYPE", "drive")
-		addEnv("SCOPE", "drive.file")
-		
-		clientID := target.ClientID
-		log.Printf("agent: [upload-debug] evaluating google_drive ClientID:")
-		log.Printf("  - Destination ClientID from Portal: %s", MaskSecret(target.ClientID))
-		log.Printf("  - System GOOGLE_CLIENT_ID from Env: %s", MaskSecret(os.Getenv("GOOGLE_CLIENT_ID")))
-		
-		if clientID == "" {
-			clientID = os.Getenv("GOOGLE_CLIENT_ID")
-			log.Printf("  - Result: Using GOOGLE_CLIENT_ID from environment")
-		} else {
-			log.Printf("  - Result: Using ClientID provided dynamically by Portal")
-		}
-		if clientID != "" {
-			addEnv("CLIENT_ID", clientID)
-			log.Printf("  - Set CLIENT_ID: %s", MaskSecret(clientID))
-		} else {
-			log.Printf("  - WARNING: No CLIENT_ID is set!")
-		}
-
-		clientSecret := target.ClientSecret
-		log.Printf("agent: [upload-debug] evaluating google_drive ClientSecret:")
-		log.Printf("  - Destination ClientSecret from Portal: %s", MaskSecret(target.ClientSecret))
-		log.Printf("  - System GOOGLE_CLIENT_SECRET from Env: %s", MaskSecret(os.Getenv("GOOGLE_CLIENT_SECRET")))
-		
-		if clientSecret == "" {
-			clientSecret = os.Getenv("GOOGLE_CLIENT_SECRET")
-			log.Printf("  - Result: Using GOOGLE_CLIENT_SECRET from environment")
-		} else {
-			log.Printf("  - Result: Using ClientSecret provided dynamically by Portal")
-		}
-		if clientSecret != "" {
-			addEnv("CLIENT_SECRET", clientSecret)
-			log.Printf("  - Set CLIENT_SECRET: %s", MaskSecret(clientSecret))
-		} else {
-			log.Printf("  - WARNING: No CLIENT_SECRET is set!")
-		}
-
-		tokenJSON := fmt.Sprintf(`{"access_token":"","token_type":"Bearer","refresh_token":"%s","expiry":"0001-01-01T00:00:00Z"}`, target.Password)
-		addEnv("TOKEN", tokenJSON)
-		addEnv("ROOT_FOLDER_ID", target.Subfolder)
-		log.Printf("agent: [upload-debug] evaluating google_drive token:")
-		log.Printf("  - Set TOKEN using refresh_token: %s", MaskSecret(target.Password))
-		log.Printf("  - Set ROOT_FOLDER_ID: %s", target.Subfolder)
-	}
-
-	// Log the environment variables set for debugging, obscuring sensitive data.
-	log.Printf("agent: running rclone command: %s", cmd.String())
-	log.Println("agent: rclone configuration environment variables:")
-	for _, env := range cmd.Env {
-		if strings.HasPrefix(env, "RCLONE_CONFIG_") {
-			parts := strings.SplitN(env, "=", 2)
-			if len(parts) == 2 {
-				key, val := parts[0], parts[1]
-				// Obscure password, token, or client secret for security
-				if strings.Contains(key, "_PASS") || strings.Contains(key, "_TOKEN") || strings.Contains(key, "_CLIENT_SECRET") {
-					val = "[REDACTED]"
-				}
-				log.Printf("  %s=%s", key, val)
-			}
-		}
-	}
+	setupRCloneEnv(cmd, target, remoteName, true)
 
 	r, w, err := os.Pipe()
 	if err != nil {
@@ -280,6 +212,130 @@ func uploadFile(ctx context.Context, src, dst string, target Destination, remote
 		return fmt.Errorf("rclone: %w", err)
 	}
 	return nil
+}
+
+func createRemoteDir(ctx context.Context, dir string, target Destination, remoteName string) error {
+	cmd := exec.CommandContext(ctx, "rclone", "mkdir",
+		"--config", "/dev/null",
+		fmt.Sprintf("%s:%s", remoteName, dir),
+	)
+	setupRCloneEnv(cmd, target, remoteName, false)
+	return cmd.Run()
+}
+
+func setupRCloneEnv(cmd *exec.Cmd, target Destination, remoteName string, enableLogging bool) {
+	cmd.Env = os.Environ()
+	
+	upperRemote := strings.ToUpper(remoteName)
+	lowerRemote := strings.ToLower(remoteName)
+	
+	addEnv := func(key, value string) {
+		cmd.Env = append(cmd.Env, fmt.Sprintf("RCLONE_CONFIG_%s_%s=%s", upperRemote, key, value))
+		cmd.Env = append(cmd.Env, fmt.Sprintf("RCLONE_CONFIG_%s_%s=%s", lowerRemote, key, value))
+	}
+
+	switch target.Type {
+	case "smb":
+		addEnv("TYPE", "smb")
+		addEnv("HOST", target.Host)
+		addEnv("USER", target.Username)
+		addEnv("PASS", obscurePassword(target.Password))
+		if target.Domain != "" {
+			addEnv("DOMAIN", target.Domain)
+		}
+	case "sftp":
+		addEnv("TYPE", "sftp")
+		addEnv("HOST", target.Host)
+		addEnv("USER", target.Username)
+		addEnv("PASS", obscurePassword(target.Password))
+	case "google_drive":
+		addEnv("TYPE", "drive")
+		addEnv("SCOPE", "drive.file")
+		
+		clientID := target.ClientID
+		if enableLogging {
+			log.Printf("agent: [upload-debug] evaluating google_drive ClientID:")
+			log.Printf("  - Destination ClientID from Portal: %s", MaskSecret(target.ClientID))
+			log.Printf("  - System GOOGLE_CLIENT_ID from Env: %s", MaskSecret(os.Getenv("GOOGLE_CLIENT_ID")))
+		}
+		
+		if clientID == "" {
+			clientID = os.Getenv("GOOGLE_CLIENT_ID")
+			if enableLogging {
+				log.Printf("  - Result: Using GOOGLE_CLIENT_ID from environment")
+			}
+		} else {
+			if enableLogging {
+				log.Printf("  - Result: Using ClientID provided dynamically by Portal")
+			}
+		}
+		if clientID != "" {
+			addEnv("CLIENT_ID", clientID)
+			if enableLogging {
+				log.Printf("  - Set CLIENT_ID: %s", MaskSecret(clientID))
+			}
+		} else {
+			if enableLogging {
+				log.Printf("  - WARNING: No CLIENT_ID is set!")
+			}
+		}
+
+		clientSecret := target.ClientSecret
+		if enableLogging {
+			log.Printf("agent: [upload-debug] evaluating google_drive ClientSecret:")
+			log.Printf("  - Destination ClientSecret from Portal: %s", MaskSecret(target.ClientSecret))
+			log.Printf("  - System GOOGLE_CLIENT_SECRET from Env: %s", MaskSecret(os.Getenv("GOOGLE_CLIENT_SECRET")))
+		}
+		
+		if clientSecret == "" {
+			clientSecret = os.Getenv("GOOGLE_CLIENT_SECRET")
+			if enableLogging {
+				log.Printf("  - Result: Using GOOGLE_CLIENT_SECRET from environment")
+			}
+		} else {
+			if enableLogging {
+				log.Printf("  - Result: Using ClientSecret provided dynamically by Portal")
+			}
+		}
+		if clientSecret != "" {
+			addEnv("CLIENT_SECRET", clientSecret)
+			if enableLogging {
+				log.Printf("  - Set CLIENT_SECRET: %s", MaskSecret(clientSecret))
+			}
+		} else {
+			if enableLogging {
+				log.Printf("  - WARNING: No CLIENT_SECRET is set!")
+			}
+		}
+
+		tokenJSON := fmt.Sprintf(`{"access_token":"","token_type":"Bearer","refresh_token":"%s","expiry":"0001-01-01T00:00:00Z"}`, target.Password)
+		addEnv("TOKEN", tokenJSON)
+		addEnv("ROOT_FOLDER_ID", target.Subfolder)
+		if enableLogging {
+			log.Printf("agent: [upload-debug] evaluating google_drive token:")
+			log.Printf("  - Set TOKEN using refresh_token: %s", MaskSecret(target.Password))
+			log.Printf("  - Set ROOT_FOLDER_ID: %s", target.Subfolder)
+		}
+	}
+
+	if enableLogging {
+		// Log the environment variables set for debugging, obscuring sensitive data.
+		log.Printf("agent: running rclone command: %s", cmd.String())
+		log.Println("agent: rclone configuration environment variables:")
+		for _, env := range cmd.Env {
+			if strings.HasPrefix(env, "RCLONE_CONFIG_") {
+				parts := strings.SplitN(env, "=", 2)
+				if len(parts) == 2 {
+					key, val := parts[0], parts[1]
+					// Obscure password, token, or client secret for security
+					if strings.Contains(key, "_PASS") || strings.Contains(key, "_TOKEN") || strings.Contains(key, "_CLIENT_SECRET") {
+						val = "[REDACTED]"
+					}
+					log.Printf("  %s=%s", key, val)
+				}
+			}
+		}
+	}
 }
 
 // obscurePassword performs the rclone obscuring logic (simplified for now or uses rclone obscure)
