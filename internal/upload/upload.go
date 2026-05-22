@@ -226,6 +226,7 @@ func uploadFile(ctx context.Context, src, dst string, target Destination, remote
 
 		tokenJSON := fmt.Sprintf(`{"access_token":"","token_type":"Bearer","refresh_token":"%s","expiry":"0001-01-01T00:00:00Z"}`, target.Password)
 		addEnv("TOKEN", tokenJSON)
+		addEnv("ROOT_FOLDER_ID", target.Subfolder)
 		log.Printf("agent: [upload-debug] evaluating google_drive token:")
 		log.Printf("  - Set TOKEN using refresh_token: %s", MaskSecret(target.Password))
 		log.Printf("  - Set ROOT_FOLDER_ID: %s", target.Subfolder)
