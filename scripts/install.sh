@@ -360,6 +360,27 @@ echo "libcomposite" > /etc/modules-load.d/ivault.conf
 mountpoint -q /sys/kernel/config || mount -t configfs none /sys/kernel/config 2>/dev/null || true
 ok "libcomposite configured to load at boot"
 
+# Rockchip/Seeed vendor images ship usbdevice.service, which builds its own
+# USB gadget at boot and claims the single UDC before iVault can — leaving
+# iVault's gadget unbound and invisible to the host. Disable it and tear down
+# any gadget it already created so iVault owns the controller.
+for svc in usbdevice usb-gadget; do
+    if systemctl list-unit-files 2>/dev/null | grep -q "^${svc}.service"; then
+        info "Disabling competing USB gadget service: ${svc}.service"
+        systemctl disable --now "${svc}.service" >/dev/null 2>&1 || true
+    fi
+done
+for g in /sys/kernel/config/usb_gadget/*/; do
+    [ -e "$g" ] || continue
+    case "$g" in
+        */ivault/) continue ;;
+    esac
+    if [ -s "${g}UDC" ]; then
+        info "Releasing UDC held by stale gadget: $(basename "$g")"
+        echo "" > "${g}UDC" 2>/dev/null || true
+    fi
+done
+
 # ==============================================================================
 # 7. BUILD THE BINARY
 # ==============================================================================
