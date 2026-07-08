@@ -92,7 +92,7 @@ sudo chown -R $USER:$USER /nvme
 sudo apt install exfatprogs exfat-fuse -y
 mkdir -p /nvme/ingest /nvme/upload_queue
 fallocate -l 200G /nvme/usb_disk.img
-mkfs.exfat -L "IVAULT" /nvme/usb_disk.img
+mkfs.exfat -L "RELAY" /nvme/usb_disk.img
 ```
 
 ### 2. Build iVault

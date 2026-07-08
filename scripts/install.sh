@@ -28,6 +28,7 @@ OTG_DISK=""           # --otg-disk=DEV   force the external-drive NVMe
 INTERNAL_DISK=""      # --internal-disk=DEV
 EXTERNAL_SIZE=""      # --external-size=NNNG   external image size (single-disk)
 UDC_OVERRIDE=""       # --udc=NAME       force the USB Device Controller name
+DRIVE_LABEL="RELAY"   # --label=NAME     volume label shown on the host
 INSTALL_SAMBA=1       # --no-samba       skip the local NAS share
 DO_BUILD=1            # --no-build       skip compiling (binary already in place)
 GO_VERSION="1.25.0"
@@ -74,6 +75,7 @@ for arg in "$@"; do
         --internal-disk=*)   INTERNAL_DISK="${arg#*=}" ;;
         --external-size=*)   EXTERNAL_SIZE="${arg#*=}" ;;
         --udc=*)             UDC_OVERRIDE="${arg#*=}" ;;
+        --label=*)           DRIVE_LABEL="${arg#*=}" ;;
         --no-samba)          INSTALL_SAMBA=0 ;;
         --no-build)          DO_BUILD=0 ;;
         -h|--help)
@@ -333,17 +335,17 @@ fi
 mkdir -p "$INGEST_DIR" "$QUEUE_DIR" "$DB_DIR" "$CONFIG_DIR"
 
 if [ "$BACKING_MODE" = "whole" ]; then
-    info "Formatting ${OTG_DISK} as a whole-device exFAT superfloppy (label IVAULT)..."
+    info "Formatting ${OTG_DISK} as a whole-device exFAT superfloppy (label ${DRIVE_LABEL})..."
     umount "$INGEST_DIR" 2>/dev/null || true
     wipefs -a -f "$OTG_DISK" >/dev/null
-    mkfs.exfat -L "IVAULT" "$OTG_DISK" >/dev/null
+    mkfs.exfat -L "$DRIVE_LABEL" "$OTG_DISK" >/dev/null
     ok "external drive ready: ${OTG_DISK}"
 else
     if [ ! -f "$IMAGE_PATH" ]; then
         info "Creating ${EXTERNAL_SIZE} exFAT image at ${IMAGE_PATH}..."
         fallocate -l "$EXTERNAL_SIZE" "$IMAGE_PATH" \
             || die "fallocate failed — not enough space for ${EXTERNAL_SIZE}?"
-        mkfs.exfat -L "IVAULT" "$IMAGE_PATH" >/dev/null
+        mkfs.exfat -L "$DRIVE_LABEL" "$IMAGE_PATH" >/dev/null
         ok "external drive image ready: ${IMAGE_PATH}"
     else
         warn "${IMAGE_PATH} already exists — leaving it as-is."
