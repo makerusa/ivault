@@ -95,11 +95,18 @@ func Attach(imagePath, udcName string) error {
 		}
 	}
 
-	if err := writeFile(gadgetDir+"/UDC", udcName); err != nil {
-		return fmt.Errorf("enable udc: %w", err)
+	// Bind to the UDC. The controller can briefly report busy ("couldn't find
+	// an available UDC or it's busy") when a previous gadget binding has not
+	// been fully released yet — e.g. during a maintenance detach/reattach — so
+	// retry a few times before giving up.
+	var bindErr error
+	for i := 0; i < 10; i++ {
+		if bindErr = writeFile(gadgetDir+"/UDC", udcName); bindErr == nil {
+			return nil
+		}
+		time.Sleep(300 * time.Millisecond)
 	}
-
-	return nil
+	return fmt.Errorf("enable udc: %w", bindErr)
 }
 
 // Detach disables and tears down the USB gadget configfs tree.
