@@ -370,8 +370,18 @@ ok "libcomposite configured to load at boot"
 # it works even if some image spawns a gadget by a mechanism we don't know.
 for svc in usbdevice usb-gadget; do
     if systemctl list-unit-files 2>/dev/null | grep -q "^${svc}\.service"; then
-        info "Masking competing USB gadget service: ${svc}.service"
+        info "Neutralizing competing USB gadget service: ${svc}.service"
         systemctl stop "${svc}.service" >/dev/null 2>&1 || true
+        systemctl disable "${svc}.service" >/dev/null 2>&1 || true
+        # Vendor images ship this as a REAL unit file in /etc (not a /lib
+        # symlink), so `systemctl mask` refuses to overwrite it. Move the real
+        # file (and any drop-ins) aside, then mask so it can never start again.
+        unit="/etc/systemd/system/${svc}.service"
+        if [ -f "$unit" ] && [ ! -L "$unit" ]; then
+            mv "$unit" "${unit}.disabled-by-ivault"
+        fi
+        rm -rf "/etc/systemd/system/${svc}.service.d"
+        systemctl daemon-reload >/dev/null 2>&1 || true
         systemctl mask "${svc}.service" >/dev/null 2>&1 || true
     fi
 done
