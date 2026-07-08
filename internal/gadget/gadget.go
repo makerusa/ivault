@@ -75,16 +75,22 @@ func Attach(imagePath, udcName string) error {
 	if err := os.MkdirAll(gadgetDir+"/functions/mass_storage.0", 0755); err != nil {
 		return err
 	}
-	funcWrites := map[string]string{
-		"functions/mass_storage.0/stall":           "0",
-		"functions/mass_storage.0/lun.0/removable": "1",
-		"functions/mass_storage.0/lun.0/ro":        "0",
-		"functions/mass_storage.0/lun.0/cdrom":     "0",
-		"functions/mass_storage.0/lun.0/file":      imagePath,
+	// Order matters and must be deterministic: the LUN backing file has to be
+	// set LAST. Once lun.0/file is populated the LUN is "open" and the kernel
+	// rejects writes to removable/ro/cdrom with EBUSY. A Go map randomises
+	// iteration order, so writing these from a map intermittently set file
+	// first and then failed the whole attach with "device or resource busy".
+	// Use an ordered slice with file last.
+	funcWrites := []struct{ path, val string }{
+		{"functions/mass_storage.0/stall", "0"},
+		{"functions/mass_storage.0/lun.0/removable", "1"},
+		{"functions/mass_storage.0/lun.0/ro", "0"},
+		{"functions/mass_storage.0/lun.0/cdrom", "0"},
+		{"functions/mass_storage.0/lun.0/file", imagePath}, // must be written last
 	}
-	for k, v := range funcWrites {
-		if err := writeFile(gadgetDir+"/"+k, v); err != nil {
-			return fmt.Errorf("write %s: %w", k, err)
+	for _, w := range funcWrites {
+		if err := writeFile(gadgetDir+"/"+w.path, w.val); err != nil {
+			return fmt.Errorf("write %s: %w", w.path, err)
 		}
 	}
 

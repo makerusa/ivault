@@ -481,6 +481,29 @@ fi
 # ==============================================================================
 hr
 info "Installing systemd service..."
+
+# Pre-start guard, kept in a standalone script (NOT inline in the unit) so
+# systemd's own ${} expansion can't mangle the shell variables. It waits for a
+# USB Device Controller to exist, then unbinds it from any non-iVault gadget so
+# iVault can claim it — the backstop that guarantees iVault wins regardless of
+# what the base image does.
+cat > /usr/local/bin/ivault-udc-guard.sh <<'GUARD'
+#!/bin/sh
+# Wait up to ~30s for a UDC to appear (dwc3 may probe after we start).
+for _ in $(seq 1 30); do
+    ls /sys/class/udc/ 2>/dev/null | grep -q . && break
+    sleep 1
+done
+# Release the controller from any gadget that isn't iVault's.
+for g in /sys/kernel/config/usb_gadget/*/; do
+    [ -e "$g" ] || continue
+    [ "$g" = /sys/kernel/config/usb_gadget/ivault/ ] && continue
+    echo "" > "${g}UDC" 2>/dev/null || true
+done
+exit 0
+GUARD
+chmod +x /usr/local/bin/ivault-udc-guard.sh
+
 cat > /etc/systemd/system/ivault.service <<EOT
 [Unit]
 Description=iVault - Intelligent USB Storage Appliance
@@ -489,12 +512,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-# Reclaim the USB Device Controller before starting: unbind it from any
-# non-iVault gadget (e.g. a vendor "rockchip"/usbdevice gadget) that grabbed
-# it first at boot. A UDC can only be bound to one gadget, so once iVault
-# holds it nothing else can steal it — this just guarantees iVault wins the
-# boot-time race regardless of the base image.
-ExecStartPre=/bin/sh -c 'for g in /sys/kernel/config/usb_gadget/*/; do [ -e "\$g" ] || continue; [ "\$g" = /sys/kernel/config/usb_gadget/ivault/ ] && continue; echo "" > "\${g}UDC" 2>/dev/null || true; done'
+ExecStartPre=/usr/local/bin/ivault-udc-guard.sh
 ExecStart=${BIN_PATH} --config ${CONFIG_FILE}
 Restart=on-failure
 RestartSec=5
