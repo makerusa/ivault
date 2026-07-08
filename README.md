@@ -42,7 +42,41 @@ Other RK3588-based boards with USB-C OTG support may work. The UDC name
 - exfatprogs, exfat-fuse
 - rclone (for cloud destinations)
 
-## Setup
+## Quick Install (recommended)
+
+Flash **Armbian minimal** to a microSD card, boot the board, then:
+
+```bash
+git clone https://github.com/makerusa/ivault.git
+cd ivault
+sudo ./scripts/install.sh
+```
+
+The installer detects your hardware and lays everything out for you:
+
+- **Finds your disks** — boot device, eMMC, and every NVMe. It never touches
+  the disk you booted from.
+- **Picks the external-drive backing automatically** — a whole dedicated NVMe
+  (exFAT superfloppy) when one is free (e.g. dual-NVMe boards), or an exFAT
+  image file sharing a single NVMe (e.g. RK3576). Either way the recording host
+  sees a plain superfloppy for maximum compatibility.
+- **Prompts only for real choices** — which NVMe is the external drive, and how
+  much space to give it. Everything else uses sane defaults.
+- **Auto-detects the USB OTG controller** (`/sys/class/udc/`) instead of
+  hardcoding one board's value, and warns if the port isn't in peripheral mode.
+- **Builds, configures, and starts** the systemd service.
+
+Run `sudo ./scripts/install.sh --help` for non-interactive flags
+(`--yes`, `--otg-disk=`, `--external-size=`, `--udc=`, `--no-samba`).
+
+> **Boot device:** the installer keeps your OS wherever it is and uses the NVMe
+> for storage. If you'd rather run card-free from eMMC or NVMe, it prints the
+> exact `armbian-install` steps — it won't migrate a live root filesystem for
+> you (that step is best done deliberately on a headless board).
+
+The manual steps below remain available if you'd rather set things up by hand.
+
+## Manual Setup
 
 ### 1. Prepare storage
 ```bash
