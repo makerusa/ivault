@@ -250,7 +250,10 @@ func setupRCloneEnv(cmd *exec.Cmd, target Destination, remoteName string, enable
 		addEnv("PASS", obscurePassword(target.Password))
 	case "google_drive":
 		addEnv("TYPE", "drive")
-		addEnv("SCOPE", "drive.file")
+		// Must match the scope the portal's refresh token was granted. Full
+		// drive (not drive.file) is required to upload into a user-owned folder
+		// the app did not itself create.
+		addEnv("SCOPE", "drive")
 		
 		clientID := target.ClientID
 		if enableLogging {
