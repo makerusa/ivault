@@ -364,10 +364,15 @@ ok "libcomposite configured to load at boot"
 # USB gadget at boot and claims the single UDC before iVault can — leaving
 # iVault's gadget unbound and invisible to the host. Disable it and tear down
 # any gadget it already created so iVault owns the controller.
+# `disable` is not enough here: these units can be pulled back in by a target
+# or udev rule on the next boot. `mask` makes them impossible to start. The
+# ExecStartPre reclaim guard on ivault.service (below) is the real backstop —
+# it works even if some image spawns a gadget by a mechanism we don't know.
 for svc in usbdevice usb-gadget; do
-    if systemctl list-unit-files 2>/dev/null | grep -q "^${svc}.service"; then
-        info "Disabling competing USB gadget service: ${svc}.service"
-        systemctl disable --now "${svc}.service" >/dev/null 2>&1 || true
+    if systemctl list-unit-files 2>/dev/null | grep -q "^${svc}\.service"; then
+        info "Masking competing USB gadget service: ${svc}.service"
+        systemctl stop "${svc}.service" >/dev/null 2>&1 || true
+        systemctl mask "${svc}.service" >/dev/null 2>&1 || true
     fi
 done
 for g in /sys/kernel/config/usb_gadget/*/; do
@@ -474,6 +479,12 @@ Wants=network-online.target
 
 [Service]
 Type=simple
+# Reclaim the USB Device Controller before starting: unbind it from any
+# non-iVault gadget (e.g. a vendor "rockchip"/usbdevice gadget) that grabbed
+# it first at boot. A UDC can only be bound to one gadget, so once iVault
+# holds it nothing else can steal it — this just guarantees iVault wins the
+# boot-time race regardless of the base image.
+ExecStartPre=/bin/sh -c 'for g in /sys/kernel/config/usb_gadget/*/; do [ -e "\$g" ] || continue; [ "\$g" = /sys/kernel/config/usb_gadget/ivault/ ] && continue; echo "" > "\${g}UDC" 2>/dev/null || true; done'
 ExecStart=${BIN_PATH} --config ${CONFIG_FILE}
 Restart=on-failure
 RestartSec=5
