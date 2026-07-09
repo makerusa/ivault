@@ -99,3 +99,19 @@ func TestStaticCIDR(t *testing.T) {
 		}
 	}
 }
+
+func TestEndpointHostPort(t *testing.T) {
+	cases := []struct{ endpoint, host, port string }{
+		{"https://portal.example.com", "portal.example.com", "443"},
+		{"http://portal.example.com", "portal.example.com", "80"},
+		{"https://portal.example.com:8443/api", "portal.example.com", "8443"},
+		{"http://192.168.1.10:3000", "192.168.1.10", "3000"},
+		{"not a url", "", ""},
+	}
+	for _, c := range cases {
+		h, p := endpointHostPort(c.endpoint)
+		if h != c.host || p != c.port {
+			t.Errorf("endpointHostPort(%q) = (%q,%q), want (%q,%q)", c.endpoint, h, p, c.host, c.port)
+		}
+	}
+}

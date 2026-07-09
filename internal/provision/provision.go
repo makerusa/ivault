@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -69,8 +71,13 @@ func Process(mountPoint string, cfgPath string) (bool, error) {
 		// Continue anyway, maybe it's already connected via ethernet
 	}
 
-	// Wait a moment for network to settle
-	time.Sleep(3 * time.Second)
+	// Wait for the network to actually be usable before contacting the portal.
+	// After ConfigureNetwork returns, Wi-Fi association + DHCP + DNS can take
+	// many seconds; the old fixed 3s sleep raced ahead and the bootstrap DNS
+	// lookup failed. Poll until the portal endpoint resolves and is reachable.
+	if err := waitForNetwork(pf.CloudEndpoint, 90*time.Second); err != nil {
+		log.Printf("provision: %v — attempting bootstrap anyway", err)
+	}
 
 	// 2. Bootstrap with Cloud API
 	log.Printf("provision: bootstrapping with cloud API at %s", pf.CloudEndpoint)
@@ -101,6 +108,58 @@ func Process(mountPoint string, cfgPath string) (bool, error) {
 
 	log.Println("provision: sequence complete!")
 	return true, nil
+}
+
+// waitForNetwork blocks until the portal endpoint's host resolves via DNS and a
+// TCP connection to it succeeds, or until timeout. This replaces a fixed sleep
+// so provisioning over freshly-configured Wi-Fi waits for association + DHCP +
+// DNS to complete instead of racing ahead and failing the bootstrap lookup.
+func waitForNetwork(endpoint string, timeout time.Duration) error {
+	host, port := endpointHostPort(endpoint)
+	if host == "" {
+		return fmt.Errorf("could not parse host from endpoint %q", endpoint)
+	}
+	addr := net.JoinHostPort(host, port)
+	deadline := time.Now().Add(timeout)
+	var lastErr error
+	for attempt := 1; time.Now().Before(deadline); attempt++ {
+		if _, err := net.LookupHost(host); err != nil {
+			lastErr = err
+			log.Printf("provision: waiting for network — DNS for %s not resolving yet (attempt %d)", host, attempt)
+			time.Sleep(2 * time.Second)
+			continue
+		}
+		conn, err := net.DialTimeout("tcp", addr, 5*time.Second)
+		if err != nil {
+			lastErr = err
+			log.Printf("provision: waiting for network — %s not reachable yet (attempt %d)", addr, attempt)
+			time.Sleep(2 * time.Second)
+			continue
+		}
+		_ = conn.Close()
+		log.Printf("provision: network is up — %s reachable after %d attempt(s)", addr, attempt)
+		return nil
+	}
+	return fmt.Errorf("network did not come up within %s (last error: %v)", timeout, lastErr)
+}
+
+// endpointHostPort extracts the host and port from a cloud endpoint URL,
+// defaulting the port from the scheme (443 for https, 80 for http).
+func endpointHostPort(endpoint string) (host, port string) {
+	u, err := url.Parse(endpoint)
+	if err != nil || u.Hostname() == "" {
+		return "", ""
+	}
+	host = u.Hostname()
+	port = u.Port()
+	if port == "" {
+		if u.Scheme == "http" {
+			port = "80"
+		} else {
+			port = "443"
+		}
+	}
+	return host, port
 }
 
 func bootstrapDevice(endpoint, deviceID, userID, token string) (string, error) {
