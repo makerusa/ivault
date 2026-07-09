@@ -18,6 +18,7 @@ import (
 	"github.com/makerusa/ivault/internal/gadget"
 	"github.com/makerusa/ivault/internal/ingest"
 	"github.com/makerusa/ivault/internal/led"
+	"github.com/makerusa/ivault/internal/provision"
 	"github.com/makerusa/ivault/internal/state"
 	"github.com/makerusa/ivault/internal/upload"
 )
@@ -80,15 +81,15 @@ func main() {
 	}
 
 	statusLED = led.New(cfg.LEDName, cfg.LEDEnabled)
+	statusLED.SlowPulse()         // until a heartbeat confirms we're connected
+	agent.SetStatusLED(statusLED) // agent drives solid/slow-pulse from heartbeats
 
 	sm := state.New()
 	sm.OnChange(func(old, new state.State) {
 		msg := "state transition: " + old.String() + " → " + new.String()
 		log.Println(msg)
 		database.Log("info", "state", msg)
-		statusLED.ForState(new)
 	})
-	statusLED.ForState(sm.State()) // reflect the initial (booting) state
 
 	monitor := gadget.NewMonitor(cfg.UDCName)
 	monitor.Start(ctx)
@@ -327,6 +328,14 @@ func runMaintenance(
 		}
 		log.Println("disk image mounted")
 
+		// If a provision file is present, show provisioning-in-progress now
+		// (before the potentially slow bootstrap/network steps run).
+		provisioning := provision.Detect(ingestCfg.MountPoint)
+		if provisioning {
+			log.Println("provision file detected — provisioning in progress")
+			statusLED.RapidPulse()
+		}
+
 		// Ingest with full tracking
 		result, provisioned, err := ingest.Run(ingestCfg, database, sessionID)
 		if err != nil {
@@ -340,13 +349,17 @@ func runMaintenance(
 
 		if provisioned {
 			log.Println("device was just provisioned — reloading config and starting agent")
-			statusLED.FlashProvisioned() // visible confirmation the file was applied
-			statusLED.ForState(sm.State())
+			// Leave the rapid pulse on; the agent's first heartbeat flips it to
+			// solid once it confirms the portal connection.
 			newCfg, err := config.LoadOrDefault(ingestCfg.ConfigPath)
 			if err == nil {
 				*cfg = *newCfg
 				agent.Start(ctx, cfg, sm, database)
 			}
+		} else if provisioning {
+			// A provision file was present but provisioning didn't complete →
+			// return to "not connected".
+			statusLED.SlowPulse()
 		}
 
 		log.Printf("ingest: found=%d copied=%d skipped=%d bytes=%d",

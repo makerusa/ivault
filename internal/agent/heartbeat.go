@@ -20,10 +20,19 @@ import (
 
 	"github.com/makerusa/ivault/internal/config"
 	"github.com/makerusa/ivault/internal/db"
+	"github.com/makerusa/ivault/internal/led"
 	"github.com/makerusa/ivault/internal/secret"
 	"github.com/makerusa/ivault/internal/state"
 	"github.com/makerusa/ivault/internal/upload"
 )
+
+// statusLED reflects portal-connection status: solid when a heartbeat
+// succeeds, slow pulse when it fails or the device isn't provisioned. Set by
+// main via SetStatusLED; nil-safe.
+var statusLED *led.Indicator
+
+// SetStatusLED wires the shared status LED into the agent.
+func SetStatusLED(i *led.Indicator) { statusLED = i }
 
 // secretMgr encrypts/decrypts the cached destinations blob (cloud refresh
 // tokens, passwords) at rest in the SQLite config table. Initialised in Start.
@@ -64,6 +73,9 @@ var agentStarted atomic.Bool
 func Start(ctx context.Context, cfg *config.Config, sm *state.Machine, database *db.DB) {
 	if cfg.DeviceID == "" || cfg.DeviceAPIKey == "" || cfg.CloudEndpoint == "" {
 		log.Println("agent: device not provisioned, skipping heartbeat")
+		if statusLED != nil {
+			statusLED.SlowPulse() // not provisioned → not connected
+		}
 		return
 	}
 
@@ -190,13 +202,24 @@ func sendHeartbeat(cfg *config.Config, sm *state.Machine, database *db.DB) {
 	resp, err := client.Do(req)
 	if err != nil {
 		log.Printf("agent: heartbeat failed: %v", err)
+		if statusLED != nil {
+			statusLED.SlowPulse() // can't reach portal → not connected
+		}
 		return
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		log.Printf("agent: portal returned status %d", resp.StatusCode)
+		if statusLED != nil {
+			statusLED.SlowPulse()
+		}
 		return
+	}
+
+	// Connected: provisioned and portal reachable.
+	if statusLED != nil {
+		statusLED.Solid()
 	}
 
 	// Portal acknowledged delivery — advance the file-sync watermark so acked
