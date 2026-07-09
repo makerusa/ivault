@@ -16,6 +16,12 @@ import (
 	"github.com/makerusa/ivault/internal/db"
 )
 
+// maxUploadAttempts bounds how many times a file is retried across maintenance
+// cycles before it is marked abandoned. Without this a permanently failing
+// upload (e.g. a destination permission error) re-sends the whole file every
+// cycle forever.
+const maxUploadAttempts = 3
+
 // UploadConfig holds the parameters for the upload.
 type UploadConfig struct {
 	UploadQueue  string // local directory of staged files, e.g. /nvme/upload_queue
@@ -144,9 +150,17 @@ func UploadAll(ctx context.Context, database *db.DB, cfg UploadConfig) ([]string
 					database.UpdateFileState(f.ID, db.FileQueued)
 					return fmt.Errorf("upload cancelled")
 				}
-				// Genuine failure — record and continue with remaining files
+				// Genuine failure — record the error (increments upload_attempts)
+				// and continue with the remaining files.
 				database.UpdateFileError(f.ID, err.Error())
-				database.UpdateFileState(f.ID, db.FileFailed)
+				// Abandon after too many attempts so a permanently failing file
+				// doesn't re-upload every maintenance cycle forever.
+				if f.UploadAttempts+1 >= maxUploadAttempts {
+					log.Printf("agent: giving up on %s after %d attempts — marking abandoned", f.Filename, f.UploadAttempts+1)
+					database.UpdateFileState(f.ID, db.FileAbandoned)
+				} else {
+					database.UpdateFileState(f.ID, db.FileFailed)
+				}
 				return nil
 			}
 
@@ -172,8 +186,8 @@ func UploadAll(ctx context.Context, database *db.DB, cfg UploadConfig) ([]string
 func uploadFile(ctx context.Context, src, dst string, target Destination, remoteName string) error {
 	cmd := exec.CommandContext(ctx, "rclone", "copyto",
 		"--config", "/dev/null",
-		"--retries", "1", // Reduced for faster debugging
-		"--low-level-retries", "1",
+		"--retries", "3",
+		"--low-level-retries", "10",
 		"--stats", "1s",
 		"-vv",
 		src, dst,
@@ -345,6 +359,12 @@ func setupRCloneEnv(cmd *exec.Cmd, target Destination, remoteName string, enable
 // For actual production, we should call 'rclone obscure' or implement the simple XOR.
 func obscurePassword(p string) string {
 	cmd := exec.Command("rclone", "obscure", p)
-	out, _ := cmd.Output()
+	out, err := cmd.Output()
+	if err != nil {
+		// Returning "" would silently produce an empty password and a
+		// confusing auth failure downstream — surface it instead.
+		log.Printf("agent: warning: 'rclone obscure' failed (%v); SMB/SFTP password will be empty", err)
+		return ""
+	}
 	return strings.TrimSpace(string(out))
 }

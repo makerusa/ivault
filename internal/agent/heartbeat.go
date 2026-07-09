@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -22,11 +23,24 @@ import (
 	"github.com/makerusa/ivault/internal/upload"
 )
 
+// agentStarted ensures the heartbeat loop is launched at most once. main calls
+// Start at boot and again from the runtime provision-file handler, so without
+// this guard a device provisioned at runtime would run two heartbeat loops and
+// leak a duplicate state-change handler.
+var agentStarted atomic.Bool
+
 // Start begins the heartbeat loop in a background goroutine.
 // sm is used to read the current device state for each heartbeat.
 func Start(ctx context.Context, cfg *config.Config, sm *state.Machine, database *db.DB) {
 	if cfg.DeviceID == "" || cfg.DeviceAPIKey == "" || cfg.CloudEndpoint == "" {
 		log.Println("agent: device not provisioned, skipping heartbeat")
+		return
+	}
+
+	// Guard after the provisioned check so a boot-time skip (not yet
+	// provisioned) doesn't prevent a later real start once provisioned.
+	if !agentStarted.CompareAndSwap(false, true) {
+		log.Println("agent: heartbeat already running — skipping duplicate Start")
 		return
 	}
 
