@@ -298,7 +298,7 @@ hr
 info "Installing system packages..."
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
-pkgs=(exfatprogs exfat-fuse rclone sqlite3 gcc libc6-dev wget tar parted)
+pkgs=(exfatprogs exfat-fuse rclone sqlite3 gcc libc6-dev wget tar parted wpasupplicant)
 [ "$INSTALL_SAMBA" = "1" ] && pkgs+=(samba avahi-daemon)
 apt-get install -y "${pkgs[@]}"
 ok "packages installed"
