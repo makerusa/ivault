@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# iVault Universal Installer
+# MakerUSA Relay — Universal Installer
 # ------------------------------------------------------------------------------
 # One script for every supported board. It detects the hardware, chooses safe
 # defaults wherever there is no real choice, and prompts only when a decision
@@ -88,7 +88,7 @@ done
 [ "$EUID" -eq 0 ] || die "please run as root (sudo $0)"
 
 echo
-echo "${c_bold}iVault Universal Installer${c_reset}"
+echo "${c_bold}MakerUSA Relay Installer${c_reset}"
 hr
 
 # ==============================================================================
@@ -146,7 +146,7 @@ echo
 # --- USB gadget capability gate ---
 if [ -z "$UDC_NAME" ]; then
     warn "No USB Device Controller found under /sys/class/udc/."
-    warn "The OTG-C port is not in peripheral/device mode, so iVault cannot"
+    warn "The OTG-C port is not in peripheral/device mode, so Relay cannot"
     warn "present itself as a USB drive yet. This is usually a device-tree"
     warn "issue: the dwc3/usb node needs  dr_mode = \"peripheral\"  (or a working"
     warn "OTG role switch) for this board. Fix that, then re-run the installer."
@@ -403,7 +403,7 @@ done
 # ==============================================================================
 if [ "$DO_BUILD" = "1" ]; then
     hr
-    info "Building iVault..."
+    info "Building the Relay agent..."
     if ! command -v go >/dev/null 2>&1 && [ ! -x /usr/local/go/bin/go ]; then
         arch="$(uname -m)"; goarch="arm64"
         [ "$arch" = "x86_64" ] && goarch="amd64"
@@ -448,7 +448,7 @@ cat > "$CONFIG_FILE" <<EOF
   "upload_queue": "${QUEUE_DIR}",
   "udc_name": "${UDC_NAME}",
   "rclone_remote": "gdrive",
-  "rclone_path": "iVault",
+  "rclone_path": "Relay",
   "upload_workers": 2,
   "schedule_mode": "daily",
   "schedule_interval_minutes": 60,
@@ -472,7 +472,7 @@ if [ "$INSTALL_SAMBA" = "1" ]; then
         cat >> /etc/samba/smb.conf <<EOT
 
 [ivault-storage]
-   comment = iVault local storage
+   comment = MakerUSA Relay local storage
    path = ${MOUNT_ROOT}
    browseable = yes
    read only = no
@@ -516,7 +516,7 @@ chmod +x /usr/local/bin/ivault-udc-guard.sh
 
 cat > /etc/systemd/system/ivault.service <<EOT
 [Unit]
-Description=iVault - Intelligent USB Storage Appliance
+Description=MakerUSA Relay - Intelligent USB Storage Appliance
 After=local-fs.target network-online.target
 Wants=network-online.target
 
@@ -539,7 +539,7 @@ systemctl restart ivault.service || warn "service failed to start — check: jou
 # ==============================================================================
 echo
 hr
-ok "${c_bold}iVault installation complete.${c_reset}"
+ok "${c_bold}MakerUSA Relay installation complete.${c_reset}"
 echo
 echo "  Status : ${c_dim}systemctl status ivault${c_reset}"
 echo "  Logs   : ${c_dim}journalctl -u ivault -f${c_reset}"

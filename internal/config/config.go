@@ -28,7 +28,7 @@ type Config struct {
 
 	// Upload destination (rclone)
 	RcloneRemote  string `json:"rclone_remote"`  // default: gdrive
-	RclonePath    string `json:"rclone_path"`    // default: iVault
+	RclonePath    string `json:"rclone_path"`    // default: Relay
 	UploadWorkers int    `json:"upload_workers"` // default: 2
 
 	// Scheduler — when automatic maintenance (ingest+upload, which briefly
@@ -63,7 +63,7 @@ func Default() *Config {
 		UploadQueue:   "/nvme/upload_queue",
 		UDCName:       "fc000000.usb",
 		RcloneRemote:  "gdrive",
-		RclonePath:    "iVault",
+		RclonePath:    "Relay",
 		UploadWorkers: 2,
 
 		ScheduleMode:            "daily",

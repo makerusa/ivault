@@ -160,9 +160,9 @@ func main() {
 		sm.Transition(state.StateDisconnected)
 	} else {
 		sm.Transition(state.StateConnected)
-		log.Println("iVault ready — gadget state:", gadget.State(cfg.UDCName))
+		log.Println("Relay ready — gadget state:", gadget.State(cfg.UDCName))
 	}
-	database.Log("info", "main", "iVault started")
+	database.Log("info", "main", "Relay started")
 
 	// Start background network discovery
 	agent.GlobalDiscovery.Start(ctx)
@@ -242,7 +242,7 @@ func main() {
 				}
 
 				database.Log("info", "main", "shutdown complete")
-				log.Println("iVault stopped cleanly")
+				log.Println("Relay stopped cleanly")
 				// Return instead of os.Exit so defers (database.Close) run cleanly.
 				return
 			}
