@@ -100,14 +100,37 @@ Flags: `--yes`, `--otg-disk=`, `--internal-disk=`, `--external-size=`,
 
 The installer neutralizes the vendor `usbdevice` service, which is what
 otherwise stops the drive from appearing — no other USB step is normally
-needed. As a last resort, if on some board/cable a host still can't see the
-drive and `dmesg` shows a persistent `dwc3 … device reset` loop, you can force
-the OTG controller to USB 2.0 and reboot:
+needed. If a host still can't see the drive, check the gadget state:
 
 ```bash
-sudo armbian-add-overlay scripts/overlays/rk3576-usb-highspeed.dts
-sudo reboot
+cat /sys/class/udc/*/state     # "configured" = a host is connected; "not attached" = no host seen
 ```
+
+**`not attached` that never changes when you plug in a host** means the USB-C
+port isn't detecting the cable. Work through, in order:
+
+1. **Cable/port.** Use a known data-capable cable into the board's USB-C **OTG**
+   port (not a USB-A port, not a charge-only cable). Confirm the board is powered
+   from its own supply, not through the OTG-C port.
+2. **Kernel/image.** On RK3588 (Rock 5T) the USB-C role/VBUS detection is
+   kernel-dependent — some Armbian builds regressed it. If plugging in produces
+   **no `dmesg` activity at all** and `/sys/class/typec/port0/power_role` is
+   stuck at `source`, try a known-good image; e.g. `26.8.0-trunk.326` works on
+   the Rock 5T where an earlier 26.8.0 did not.
+3. **Force peripheral (RK3588 fallback).** If you can't change the image, force
+   the OTG controller to device-only mode so it enumerates via the PHY's own
+   VBUS detection instead of the Type-C role path:
+   ```bash
+   sudo armbian-add-overlay scripts/overlays/rk3588-usb-peripheral.dts
+   sudo reboot
+   ```
+4. **Flaky SuperSpeed link (RK3576).** As a last resort, if a host can mount the
+   drive but `dmesg` shows a persistent `dwc3 … device reset` loop, pin the OTG
+   controller to USB 2.0:
+   ```bash
+   sudo armbian-add-overlay scripts/overlays/rk3576-usb-highspeed.dts
+   sudo reboot
+   ```
 
 ## Status LED
 

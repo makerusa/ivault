@@ -1,0 +1,47 @@
+/dts-v1/;
+/plugin/;
+
+/*
+ * RK3588 USB-C OTG -> peripheral fix (e.g. Radxa Rock 5T / Rock 5B).
+ *
+ * Symptom this fixes:
+ *   cat /sys/class/udc/fc000000.usb/state   -> "not attached", forever
+ *   plugging a host into the USB-C port produces NO dmesg activity
+ *   /sys/class/typec/port0/power_role is stuck at "source" (write -> EACCES)
+ *
+ * Cause: on a minimal Armbian image the USB-C port's Type-C PD controller
+ * (FUSB302 at i2c 0x22) is not driven, so the dwc3 OTG controller never
+ * receives a "host connected" role/VBUS event. It sits in OTG-idle and the
+ * gadget never enumerates. (The Rockchip vendor image drives the FUSB302 and/or
+ * its usbdevice service, which is why the same board "worked before".)
+ *
+ * Fix: force the OTG controller to dr_mode = "peripheral". As a pure USB device
+ * it enumerates via the USB2 PHY's own VBUS/session-valid detection and no
+ * longer depends on the Type-C role machinery.
+ *
+ * Trade-off: this port can NO LONGER act as a USB host. That's exactly what we
+ * want for Relay -- it only ever presents itself as a drive.
+ *
+ * NOTE: unlike the RK3576 board, forcing peripheral here is safe: the RK3588
+ * C-port's role detection is already non-functional under this image, so there
+ * is no working cable-detect to lose.
+ *
+ * Apply (Armbian):
+ *   sudo armbian-add-overlay scripts/overlays/rk3588-usb-peripheral.dts
+ *   sudo reboot
+ *
+ * Verify after reboot, with the Mac cable plugged into the USB-C port:
+ *   cat /sys/class/udc/fc000000.usb/state    # -> configured
+ *
+ * The node path /usb@fc000000 is the RK3588 OTG controller (usbdrd3_0). Confirm
+ * on another board with:  readlink -f /sys/class/udc/*/device/of_node
+ */
+
+/ {
+    fragment@0 {
+        target-path = "/usb@fc000000";
+        __overlay__ {
+            dr_mode = "peripheral";
+        };
+    };
+};
