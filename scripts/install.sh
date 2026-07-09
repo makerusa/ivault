@@ -309,6 +309,15 @@ ok "packages installed"
 hr
 info "Applying storage layout..."
 
+# If a previous install is running, stop it first so it releases the internal
+# volume (SQLite DB + upload queue are open) and the USB gadget before we
+# unmount/reformat. Without this a re-install fails with "target is busy".
+# Safe (no-op) on a first install.
+if systemctl list-unit-files 2>/dev/null | grep -q '^ivault\.service'; then
+    info "Stopping running Relay service before reformatting storage..."
+    systemctl stop ivault.service 2>/dev/null || true
+fi
+
 format_ext4_and_mount() {   # format_ext4_and_mount <disk> <mountpoint>
     local disk="$1" mnt="$2" part="${1}p1"
     # ALWAYS start from a clean, full-disk GPT partition. The storage-plan
