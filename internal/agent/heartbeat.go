@@ -147,14 +147,31 @@ func sendHeartbeat(cfg *config.Config, sm *state.Machine, database *db.DB) {
 	currentStatus := sm.State().String()
 	discovered := GlobalDiscovery.GetDevices()
 
+	// File delta: send only files changed since the watermark the portal last
+	// acknowledged. New files carry full detail; subsequent heartbeats carry
+	// just the ones whose state moved. Capped so a big backlog trickles up.
+	watermark, _ := database.GetConfig("file_sync_watermark")
+	changed, err := database.GetFilesChangedSince(watermark, 200)
+	if err != nil {
+		log.Printf("agent: failed to read file changes: %v", err)
+	}
+	newWatermark := watermark
+	for _, c := range changed {
+		if c.UpdatedAt > newWatermark {
+			newWatermark = c.UpdatedAt
+		}
+	}
+
 	payload := struct {
 		Stats
 		Status            *string            `json:"status"`
 		DiscoveredDevices []DiscoveredDevice `json:"discoveredDevices"`
+		Files             []db.FileChange    `json:"files"`
 	}{
 		Stats:             stats,
 		Status:            &currentStatus,
 		DiscoveredDevices: discovered,
+		Files:             changed,
 	}
 	body, _ := json.Marshal(payload)
 	url := fmt.Sprintf("%s/api/devices/%s/heartbeat", cfg.CloudEndpoint, cfg.DeviceID)
@@ -180,6 +197,15 @@ func sendHeartbeat(cfg *config.Config, sm *state.Machine, database *db.DB) {
 	if resp.StatusCode != http.StatusOK {
 		log.Printf("agent: portal returned status %d", resp.StatusCode)
 		return
+	}
+
+	// Portal acknowledged delivery — advance the file-sync watermark so acked
+	// changes are not resent. On a failed heartbeat we skip this, so those
+	// changes stay pending and are retried next time (at-least-once).
+	if len(changed) > 0 && newWatermark != watermark {
+		if err := database.SetConfig("file_sync_watermark", newWatermark); err != nil {
+			log.Printf("agent: failed to persist file sync watermark: %v", err)
+		}
 	}
 
 	// Check for remote commands and configuration sync
