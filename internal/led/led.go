@@ -60,8 +60,8 @@ func (i *Indicator) Solid() { i.write("trigger", "none"); i.write("brightness", 
 // Off turns the LED off.
 func (i *Indicator) Off() { i.write("trigger", "none"); i.write("brightness", "0") }
 
-// SlowPulse (~5s period, brief blip) = not provisioned / not connected.
-func (i *Indicator) SlowPulse() { i.blink(200, 4800) }
+// SlowPulse (~3s period, brief blip) = not provisioned / not connected.
+func (i *Indicator) SlowPulse() { i.blink(200, 2800) }
 
 // RapidPulse (~400ms period) = provisioning in progress.
 func (i *Indicator) RapidPulse() { i.blink(200, 200) }
