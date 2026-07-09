@@ -54,7 +54,7 @@ The installer detects the board; the USB OTG controller is auto-detected from
 
 | Board | SoC | Notes |
 |-------|-----|-------|
-| Seeed reComputer RK3576 | RK3576 | SD boot, 1× NVMe, no eMMC. Needs the USB high-speed overlay (see below). |
+| Seeed reComputer RK3576 | RK3576 | SD boot, 1× NVMe, no eMMC. |
 | Radxa Rock 5T | RK3588 | eMMC + up to 2× NVMe. |
 
 Other RK35xx boards with a USB-C OTG (peripheral-capable) port should work.
@@ -96,11 +96,13 @@ Flags: `--yes`, `--otg-disk=`, `--internal-disk=`, `--external-size=`,
 > for storage. To run card-free from eMMC/NVMe, it prints the `armbian-install`
 > steps — it won't migrate a live root filesystem for you.
 
-### RK3576 USB overlay
+### USB troubleshooting (rare)
 
-The RK3576 OTG controller defaults to attempting an unstable SuperSpeed link.
-If a connected host doesn't see the drive and `dmesg` shows repeated
-`dwc3 … device reset`, apply the high-speed overlay and reboot:
+The installer neutralizes the vendor `usbdevice` service, which is what
+otherwise stops the drive from appearing — no other USB step is normally
+needed. As a last resort, if on some board/cable a host still can't see the
+drive and `dmesg` shows a persistent `dwc3 … device reset` loop, you can force
+the OTG controller to USB 2.0 and reboot:
 
 ```bash
 sudo armbian-add-overlay scripts/overlays/rk3576-usb-highspeed.dts

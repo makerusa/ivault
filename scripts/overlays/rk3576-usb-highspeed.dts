@@ -2,22 +2,22 @@
 /plugin/;
 
 /*
- * iVault USB OTG stabilization overlay for RK3576 boards
- * (e.g. Seeed reComputer RK3576).
+ * OPTIONAL last-resort USB fix for RK3576 boards (e.g. Seeed reComputer RK3576).
  *
- * The RK3576 USB3 OTG controller (dwc3 at /usb@23000000) defaults to
- * attempting a SuperSpeed (USB 3) link. In peripheral/gadget mode this link
- * is frequently unstable — the host repeatedly resets and disconnects the
- * device (visible as "dwc3 ...: device reset / device disconnect" in dmesg),
- * so a host such as macOS never holds the mass-storage device long enough to
- * mount it.
+ * You very likely DO NOT need this. The usual reason a host can't see the Relay
+ * drive on these boards is the vendor `usbdevice` service claiming the USB
+ * controller with its own gadget — which the installer already neutralizes. A
+ * clean install presents the drive with no overlay.
  *
- * This overlay pins the controller to:
- *   - maximum-speed = "high-speed"  -> USB 2.0 (480 Mbps) only, no SuperSpeed
- *   - dr_mode       = "peripheral"  -> device-only, no OTG role switching
+ * Only apply this if, after that, a host still can't mount the drive AND dmesg
+ * shows a persistent "dwc3 ...: device reset / device disconnect" loop that
+ * points to a genuinely flaky SuperSpeed link (marginal cable, specific host).
+ * It pins the OTG controller to USB 2.0 (high-speed, 480 Mbps) so no SuperSpeed
+ * link is attempted — plenty for USB mass storage.
  *
- * Both are correct for a dedicated USB-storage appliance: recording devices
- * expect USB 2.0 mass storage, and the port is only ever a peripheral.
+ * IMPORTANT: it deliberately does NOT set dr_mode. On this board, forcing
+ * dr_mode = "peripheral" disables Type-C cable/VBUS detection, so the port
+ * stops noticing when a host is plugged in. Leave dr_mode at its default (otg).
  *
  * Install (Armbian):
  *   sudo armbian-add-overlay scripts/overlays/rk3576-usb-highspeed.dts
@@ -37,7 +37,6 @@
         target-path = "/usb@23000000";
         __overlay__ {
             maximum-speed = "high-speed";
-            dr_mode = "peripheral";
         };
     };
 };

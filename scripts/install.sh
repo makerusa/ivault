@@ -553,14 +553,4 @@ if [ "$UDC_NAME" = "fc000000.usb" ] && [ -z "$UDC_OVERRIDE" ] && [ ! -e "/sys/cl
     warn "Remember: udc_name is a PLACEHOLDER. Set it to your board's real UDC"
     warn "(ls /sys/class/udc/) in ${CONFIG_FILE}, then: systemctl restart ivault"
 fi
-
-# RK3576 boards need the USB OTG controller pinned to high-speed/peripheral or
-# the SuperSpeed link resets repeatedly and hosts never mount the drive.
-if grep -qa "rk3576" /proc/device-tree/compatible 2>/dev/null; then
-    echo
-    info "RK3576 detected. If a connected host does not see the drive and dmesg"
-    info "shows repeated 'dwc3 ...: device reset / device disconnect', apply the"
-    info "USB stabilization overlay, then reboot:"
-    echo "      ${c_dim}sudo armbian-add-overlay ${REPO_ROOT}/scripts/overlays/rk3576-usb-highspeed.dts${c_reset}"
-fi
 echo
