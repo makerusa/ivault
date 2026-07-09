@@ -17,9 +17,13 @@ import (
 	"github.com/makerusa/ivault/internal/db"
 	"github.com/makerusa/ivault/internal/gadget"
 	"github.com/makerusa/ivault/internal/ingest"
+	"github.com/makerusa/ivault/internal/led"
 	"github.com/makerusa/ivault/internal/state"
 	"github.com/makerusa/ivault/internal/upload"
 )
+
+// statusLED reflects device state on a board LED (headless feedback).
+var statusLED *led.Indicator
 
 // cancelHolder guards the upload cancel function against concurrent access
 // from the signal-handler goroutine and the UDC event goroutine.
@@ -75,12 +79,16 @@ func main() {
 		log.Printf("startup recovery warning: %v", err)
 	}
 
+	statusLED = led.New(cfg.LEDName, cfg.LEDEnabled)
+
 	sm := state.New()
 	sm.OnChange(func(old, new state.State) {
 		msg := "state transition: " + old.String() + " → " + new.String()
 		log.Println(msg)
 		database.Log("info", "state", msg)
+		statusLED.ForState(new)
 	})
+	statusLED.ForState(sm.State()) // reflect the initial (booting) state
 
 	monitor := gadget.NewMonitor(cfg.UDCName)
 	monitor.Start(ctx)
@@ -332,6 +340,8 @@ func runMaintenance(
 
 		if provisioned {
 			log.Println("device was just provisioned — reloading config and starting agent")
+			statusLED.FlashProvisioned() // visible confirmation the file was applied
+			statusLED.ForState(sm.State())
 			newCfg, err := config.LoadOrDefault(ingestCfg.ConfigPath)
 			if err == nil {
 				*cfg = *newCfg

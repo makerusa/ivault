@@ -455,7 +455,9 @@ cat > "$CONFIG_FILE" <<EOF
   "schedule_window_start_hour": 2,
   "schedule_window_end_hour": 5,
   "retention_enabled": false,
-  "retention_threshold_percent": 80
+  "retention_threshold_percent": 80,
+  "led_enabled": true,
+  "led_name": "user-led"
 }
 EOF
 ok "config written"

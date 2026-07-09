@@ -48,6 +48,10 @@ type Config struct {
 	// to free space. Only ever deletes files confirmed uploaded.
 	RetentionEnabled          bool `json:"retention_enabled"`           // default: false
 	RetentionThresholdPercent int  `json:"retention_threshold_percent"` // default: 80
+
+	// Status LED — reflects device state on a board LED for headless feedback.
+	LEDEnabled bool   `json:"led_enabled"` // default: true
+	LEDName    string `json:"led_name"`    // default: "user-led"
 }
 
 // Default returns a Config populated with the reference Rock 5T defaults.
@@ -69,6 +73,9 @@ func Default() *Config {
 
 		RetentionEnabled:          false,
 		RetentionThresholdPercent: 80,
+
+		LEDEnabled: true,
+		LEDName:    "user-led",
 	}
 }
 
