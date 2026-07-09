@@ -309,14 +309,17 @@ ok "packages installed"
 hr
 info "Applying storage layout..."
 
-# If a previous install is running, stop it first so it releases the internal
-# volume (SQLite DB + upload queue are open) and the USB gadget before we
-# unmount/reformat. Without this a re-install fails with "target is busy".
-# Safe (no-op) on a first install.
+# On a re-install, stop everything that holds the storage open before we
+# unmount/reformat: the Relay service (SQLite DB + upload queue + the external
+# drive it mounts under $MOUNT_ROOT/ingest) and Samba (which shares $MOUNT_ROOT).
+# Otherwise the old volume stays busy and parted can't re-read the new table
+# ("in use ... you should reboot now"). Samba is re-enabled in step 9.
+# Safe (no-ops) on a first install.
 if systemctl list-unit-files 2>/dev/null | grep -q '^ivault\.service'; then
     info "Stopping running Relay service before reformatting storage..."
     systemctl stop ivault.service 2>/dev/null || true
 fi
+systemctl stop smbd nmbd 2>/dev/null || true
 
 format_ext4_and_mount() {   # format_ext4_and_mount <disk> <mountpoint>
     local disk="$1" mnt="$2" part="${1}p1"
@@ -330,10 +333,22 @@ format_ext4_and_mount() {   # format_ext4_and_mount <disk> <mountpoint>
     # the internal volume, leaving almost no space and breaking ingest with
     # "no space left on device".
     info "Partitioning ${disk} (single full-disk GPT partition)..."
-    umount "${disk}"* 2>/dev/null || true
+    # Fully release the disk first. On a re-install the old volume is mounted at
+    # $mnt — often WITH submounts (e.g. the external drive under $mnt/ingest) —
+    # so a plain `umount $disk*` misses them and parted then fails with
+    # "in use ... reboot now". Recursively unmount the mountpoint, unmount every
+    # partition on the disk, and force off any lingering holder.
+    umount -R "$mnt" 2>/dev/null || true
+    for p in "${disk}"p*; do
+        [ -b "$p" ] && umount "$p" 2>/dev/null || true
+    done
+    command -v fuser >/dev/null 2>&1 && fuser -km "$disk" 2>/dev/null || true
+    sync
     wipefs -a -f "$disk" >/dev/null
     parted -s "$disk" mklabel gpt mkpart primary ext4 1MiB 100%
-    partprobe "$disk"; udevadm settle
+    # Inform the kernel of the new table (partprobe, or partx as a fallback).
+    partprobe "$disk" 2>/dev/null || partx -u "$disk" 2>/dev/null || true
+    udevadm settle
     info "Formatting ${part} as ext4..."
     mkfs.ext4 -F "$part" >/dev/null
     mkdir -p "$mnt"
