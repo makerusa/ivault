@@ -341,17 +341,28 @@ format_ext4_and_mount() {   # format_ext4_and_mount <disk> <mountpoint>
     # filesystem here". Dropping the entry first prevents that auto-mount.
     sed -i "\| ${mnt} |d" /etc/fstab
     systemctl daemon-reload 2>/dev/null || true
-    # Fully release the disk. On a re-install the old volume is mounted at $mnt —
-    # often WITH submounts (e.g. the external drive under $mnt/ingest) — so a
-    # plain `umount $disk*` misses them and parted fails with "in use ... reboot
-    # now". Recursively unmount the mountpoint, unmount every partition on the
-    # disk, and force off any lingering holder.
-    umount -R "$mnt" 2>/dev/null || true
-    for p in "${disk}"p*; do
-        [ -b "$p" ] && umount "$p" 2>/dev/null || true
+    # Fully release the disk before parted. On a re-install the old volume is
+    # mounted at $mnt — often WITH submounts (e.g. the external drive under
+    # $mnt/ingest) — and while any partition stays mounted parted fails with
+    # "in use ... reboot now". Killing holders (fuser) frees file handles but
+    # does NOT unmount, so we must: stop services, kill holders, THEN unmount,
+    # and verify nothing on the disk is mounted before proceeding — retrying,
+    # since the first pass often can't unmount until holders are gone.
+    systemctl stop ivault.service smbd nmbd 2>/dev/null || true
+    local freed=0
+    for attempt in 1 2 3; do
+        command -v fuser >/dev/null 2>&1 && fuser -km "$mnt" "$disk" 2>/dev/null || true
+        umount -R "$mnt" 2>/dev/null || true
+        for p in "${disk}"p*; do
+            [ -b "$p" ] || continue
+            umount "$p" 2>/dev/null || umount -l "$p" 2>/dev/null || true
+        done
+        sync; sleep 1
+        if ! mount | grep -q "$disk"; then freed=1; break; fi
     done
-    command -v fuser >/dev/null 2>&1 && fuser -km "$disk" 2>/dev/null || true
-    sync
+    if [ "$freed" != 1 ]; then
+        die "could not release ${disk} (a partition is still mounted). Reboot the board and re-run the installer: sudo reboot"
+    fi
     wipefs -a -f "$disk" >/dev/null
     parted -s "$disk" mklabel gpt mkpart primary ext4 1MiB 100%
     # Inform the kernel of the new table (partprobe, or partx as a fallback).
