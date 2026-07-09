@@ -28,7 +28,57 @@ func Open(path string) (*DB, error) {
 		return nil, err
 	}
 
+	if err := migrate(conn); err != nil {
+		return nil, err
+	}
+
 	return &DB{conn: conn}, nil
+}
+
+// migrate applies schema changes that CREATE TABLE IF NOT EXISTS can't make to
+// an already-existing database.
+func migrate(conn *sql.DB) error {
+	added, err := addColumnIfMissing(conn, "files", "updated_at", "TEXT")
+	if err != nil {
+		return err
+	}
+	if added {
+		// ALTER ... ADD COLUMN cannot take a non-constant (strftime) default, so
+		// backfill existing rows with their best-known timestamp.
+		_, err = conn.Exec(`UPDATE files SET updated_at =
+			COALESCE(uploaded_at, queued_at, copied_at, discovered_at,
+			         strftime('%Y-%m-%d %H:%M:%f','now'))
+			WHERE updated_at IS NULL`)
+	}
+	return err
+}
+
+// addColumnIfMissing adds a column only if it isn't already present. table/col
+// are internal constants (never user input), so string interpolation is safe.
+func addColumnIfMissing(conn *sql.DB, table, col, decl string) (bool, error) {
+	rows, err := conn.Query(`PRAGMA table_info(` + table + `)`)
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid, notnull, pk int
+		var name, ctype string
+		var dflt sql.NullString
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+			return false, err
+		}
+		if name == col {
+			return false, nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return false, err
+	}
+	if _, err := conn.Exec(`ALTER TABLE ` + table + ` ADD COLUMN ` + col + ` ` + decl); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func (d *DB) Close() error {

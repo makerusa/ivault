@@ -52,7 +52,7 @@ func Attach(imagePath, udcName string) error {
 		return err
 	}
 	stringWrites := map[string]string{
-		"strings/0x409/serialnumber": "relay-001",
+		"strings/0x409/serialnumber": deviceSerial(),
 		"strings/0x409/manufacturer": "Relay",
 		"strings/0x409/product":      "Relay Storage",
 	}
@@ -75,16 +75,22 @@ func Attach(imagePath, udcName string) error {
 	if err := os.MkdirAll(gadgetDir+"/functions/mass_storage.0", 0755); err != nil {
 		return err
 	}
-	funcWrites := map[string]string{
-		"functions/mass_storage.0/stall":           "0",
-		"functions/mass_storage.0/lun.0/removable": "1",
-		"functions/mass_storage.0/lun.0/ro":        "0",
-		"functions/mass_storage.0/lun.0/cdrom":     "0",
-		"functions/mass_storage.0/lun.0/file":      imagePath,
+	// Order matters and must be deterministic: the LUN backing file has to be
+	// set LAST. Once lun.0/file is populated the LUN is "open" and the kernel
+	// rejects writes to removable/ro/cdrom with EBUSY. A Go map randomises
+	// iteration order, so writing these from a map intermittently set file
+	// first and then failed the whole attach with "device or resource busy".
+	// Use an ordered slice with file last.
+	funcWrites := []struct{ path, val string }{
+		{"functions/mass_storage.0/stall", "0"},
+		{"functions/mass_storage.0/lun.0/removable", "1"},
+		{"functions/mass_storage.0/lun.0/ro", "0"},
+		{"functions/mass_storage.0/lun.0/cdrom", "0"},
+		{"functions/mass_storage.0/lun.0/file", imagePath}, // must be written last
 	}
-	for k, v := range funcWrites {
-		if err := writeFile(gadgetDir+"/"+k, v); err != nil {
-			return fmt.Errorf("write %s: %w", k, err)
+	for _, w := range funcWrites {
+		if err := writeFile(gadgetDir+"/"+w.path, w.val); err != nil {
+			return fmt.Errorf("write %s: %w", w.path, err)
 		}
 	}
 
@@ -95,11 +101,18 @@ func Attach(imagePath, udcName string) error {
 		}
 	}
 
-	if err := writeFile(gadgetDir+"/UDC", udcName); err != nil {
-		return fmt.Errorf("enable udc: %w", err)
+	// Bind to the UDC. The controller can briefly report busy ("couldn't find
+	// an available UDC or it's busy") when a previous gadget binding has not
+	// been fully released yet — e.g. during a maintenance detach/reattach — so
+	// retry a few times before giving up.
+	var bindErr error
+	for i := 0; i < 10; i++ {
+		if bindErr = writeFile(gadgetDir+"/UDC", udcName); bindErr == nil {
+			return nil
+		}
+		time.Sleep(300 * time.Millisecond)
 	}
-
-	return nil
+	return fmt.Errorf("enable udc: %w", bindErr)
 }
 
 // Detach disables and tears down the USB gadget configfs tree.
@@ -250,4 +263,17 @@ func IsAttached() bool {
 
 func writeFile(path, value string) error {
 	return os.WriteFile(path, []byte(value), 0644)
+}
+
+// deviceSerial returns a stable, per-device USB serial number. USB serials
+// should be unique per unit — a hardcoded value can confuse hosts that key on
+// it. Derived from /etc/machine-id, with a safe fallback.
+func deviceSerial() string {
+	if b, err := os.ReadFile("/etc/machine-id"); err == nil {
+		id := strings.TrimSpace(string(b))
+		if len(id) >= 12 {
+			return "relay-" + id[:12]
+		}
+	}
+	return "relay-000000000000"
 }

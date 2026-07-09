@@ -29,7 +29,10 @@ CREATE TABLE IF NOT EXISTS files (
     upload_attempts INTEGER DEFAULT 0,
     destination_id  INTEGER,
     remote_path     TEXT,
-    error_message   TEXT
+    error_message   TEXT,
+    -- Millisecond-precision change marker, bumped on every state change. Drives
+    -- the delta sync to the portal (send files with updated_at > watermark).
+    updated_at      TEXT DEFAULT (strftime('%Y-%m-%d %H:%M:%f','now'))
 );
 
 CREATE TABLE IF NOT EXISTS destinations (
@@ -66,5 +69,6 @@ CREATE TABLE IF NOT EXISTS upload_queue (
 
 CREATE INDEX IF NOT EXISTS idx_files_state ON files(state);
 CREATE INDEX IF NOT EXISTS idx_files_checksum ON files(checksum_sha256);
+CREATE INDEX IF NOT EXISTS idx_files_updated_at ON files(updated_at);
 CREATE INDEX IF NOT EXISTS idx_logs_ts ON logs(ts);
 CREATE INDEX IF NOT EXISTS idx_upload_queue_status ON upload_queue(status);

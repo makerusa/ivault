@@ -1,5 +1,10 @@
-# iVault — Complete Technical Specification
-**Version:** 0.2.0 | **Status:** Draft | **Date:** May 2026
+# MakerUSA Relay — Technical Specification
+**Status:** Design draft (aspirational)
+
+> Early design document. For current, shipped appliance behavior see the
+> [README](../README.md) and the code — some sections here (API paths,
+> state-machine names, retention philosophy) predate the implementation and
+> have since diverged.
 
 ---
 

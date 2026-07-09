@@ -28,8 +28,30 @@ type Config struct {
 
 	// Upload destination (rclone)
 	RcloneRemote  string `json:"rclone_remote"`  // default: gdrive
-	RclonePath    string `json:"rclone_path"`    // default: iVault
+	RclonePath    string `json:"rclone_path"`    // default: Relay
 	UploadWorkers int    `json:"upload_workers"` // default: 2
+
+	// Scheduler — when automatic maintenance (ingest+upload, which briefly
+	// disconnects the drive) is allowed to run. Portal-overridable.
+	//   mode "daily"    — once per day, only inside [window_start, window_end)
+	//                     so disconnects never interrupt a recording session
+	//   mode "interval" — every N minutes, any time (only for setups that
+	//                     tolerate brief disconnects)
+	//   mode "off"      — never automatic; manual sync (SIGUSR1/portal) only
+	ScheduleMode            string `json:"schedule_mode"`              // default: "daily"
+	ScheduleIntervalMinutes int    `json:"schedule_interval_minutes"`  // interval mode, default 60
+	ScheduleWindowStartHour int    `json:"schedule_window_start_hour"` // daily mode, 0-23, default 2
+	ScheduleWindowEndHour   int    `json:"schedule_window_end_hour"`   // daily mode, 0-23, default 5
+
+	// Retention — space-based cleanup: when the virtual drive crosses the
+	// threshold, delete the oldest already-uploaded files during maintenance
+	// to free space. Only ever deletes files confirmed uploaded.
+	RetentionEnabled          bool `json:"retention_enabled"`           // default: false
+	RetentionThresholdPercent int  `json:"retention_threshold_percent"` // default: 80
+
+	// Status LED — reflects device state on a board LED for headless feedback.
+	LEDEnabled bool   `json:"led_enabled"` // default: true
+	LEDName    string `json:"led_name"`    // default: "user-led"
 }
 
 // Default returns a Config populated with the reference Rock 5T defaults.
@@ -41,8 +63,19 @@ func Default() *Config {
 		UploadQueue:   "/nvme/upload_queue",
 		UDCName:       "fc000000.usb",
 		RcloneRemote:  "gdrive",
-		RclonePath:    "iVault",
+		RclonePath:    "Relay",
 		UploadWorkers: 2,
+
+		ScheduleMode:            "daily",
+		ScheduleIntervalMinutes: 60,
+		ScheduleWindowStartHour: 2,
+		ScheduleWindowEndHour:   5,
+
+		RetentionEnabled:          false,
+		RetentionThresholdPercent: 80,
+
+		LEDEnabled: true,
+		LEDName:    "user-led",
 	}
 }
 

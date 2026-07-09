@@ -17,9 +17,14 @@ import (
 	"github.com/makerusa/ivault/internal/db"
 	"github.com/makerusa/ivault/internal/gadget"
 	"github.com/makerusa/ivault/internal/ingest"
+	"github.com/makerusa/ivault/internal/led"
+	"github.com/makerusa/ivault/internal/provision"
 	"github.com/makerusa/ivault/internal/state"
 	"github.com/makerusa/ivault/internal/upload"
 )
+
+// statusLED reflects device state on a board LED (headless feedback).
+var statusLED *led.Indicator
 
 // cancelHolder guards the upload cancel function against concurrent access
 // from the signal-handler goroutine and the UDC event goroutine.
@@ -74,6 +79,10 @@ func main() {
 	if err := startupRecovery(database, ingestCfg); err != nil {
 		log.Printf("startup recovery warning: %v", err)
 	}
+
+	statusLED = led.New(cfg.LEDName, cfg.LEDEnabled)
+	statusLED.SlowPulse()         // until a heartbeat confirms we're connected
+	agent.SetStatusLED(statusLED) // agent drives solid/slow-pulse from heartbeats
 
 	sm := state.New()
 	sm.OnChange(func(old, new state.State) {
@@ -151,9 +160,9 @@ func main() {
 		sm.Transition(state.StateDisconnected)
 	} else {
 		sm.Transition(state.StateConnected)
-		log.Println("iVault ready — gadget state:", gadget.State(cfg.UDCName))
+		log.Println("Relay ready — gadget state:", gadget.State(cfg.UDCName))
 	}
-	database.Log("info", "main", "iVault started")
+	database.Log("info", "main", "Relay started")
 
 	// Start background network discovery
 	agent.GlobalDiscovery.Start(ctx)
@@ -166,8 +175,50 @@ func main() {
 	signal.Notify(sigs, syscall.SIGTERM, syscall.SIGINT, syscall.SIGUSR1)
 	log.Println("Send SIGUSR1 to trigger maintenance: kill -USR1", os.Getpid())
 
+	// Automatic scheduler. "daily" ticks often but only acts inside the allowed
+	// window, once per day (so disconnects never interrupt a recording session);
+	// "interval" ticks at the configured interval, any time; "off" disables it.
+	// A nil channel simply never selects.
+	var scheduleC <-chan time.Time
+	lastDailyRun := ""
+	switch cfg.ScheduleMode {
+	case "interval":
+		if cfg.ScheduleIntervalMinutes > 0 {
+			t := time.NewTicker(time.Duration(cfg.ScheduleIntervalMinutes) * time.Minute)
+			defer t.Stop()
+			scheduleC = t.C
+			log.Printf("scheduler: interval mode — every %d minute(s)", cfg.ScheduleIntervalMinutes)
+		}
+	case "off":
+		log.Println("scheduler: off — manual sync only (SIGUSR1/portal)")
+	default: // "daily"
+		t := time.NewTicker(10 * time.Minute)
+		defer t.Stop()
+		scheduleC = t.C
+		log.Printf("scheduler: daily mode — one backup between %02d:00 and %02d:00",
+			cfg.ScheduleWindowStartHour, cfg.ScheduleWindowEndHour)
+	}
+
 	for {
 		select {
+		case now := <-scheduleC:
+			// In daily mode, only fire inside the allowed window and at most
+			// once per calendar day. Interval mode fires on every tick.
+			if cfg.ScheduleMode != "interval" {
+				if !inScheduleWindow(now, cfg.ScheduleWindowStartHour, cfg.ScheduleWindowEndHour) {
+					continue
+				}
+				day := now.Format("2006-01-02")
+				if day == lastDailyRun {
+					continue
+				}
+				lastDailyRun = day
+			}
+			log.Println("maintenance triggered by scheduler")
+			if fn := runMaintenance(ctx, sm, database, cfg, ingestCfg, uploadCfg, true); fn != nil {
+				holder.set(fn)
+			}
+
 		case sig := <-sigs:
 			switch sig {
 			case syscall.SIGUSR1:
@@ -191,12 +242,25 @@ func main() {
 				}
 
 				database.Log("info", "main", "shutdown complete")
-				log.Println("iVault stopped cleanly")
+				log.Println("Relay stopped cleanly")
 				// Return instead of os.Exit so defers (database.Close) run cleanly.
 				return
 			}
 		}
 	}
+}
+
+// inScheduleWindow reports whether t's hour falls within [start, end).
+// Handles windows that wrap past midnight (start > end, e.g. 22..5).
+func inScheduleWindow(t time.Time, start, end int) bool {
+	h := t.Hour()
+	if start == end {
+		return true // full day
+	}
+	if start < end {
+		return h >= start && h < end
+	}
+	return h >= start || h < end
 }
 
 func runMaintenance(
@@ -264,6 +328,14 @@ func runMaintenance(
 		}
 		log.Println("disk image mounted")
 
+		// If a provision file is present, show provisioning-in-progress now
+		// (before the potentially slow bootstrap/network steps run).
+		provisioning := provision.Detect(ingestCfg.MountPoint)
+		if provisioning {
+			log.Println("provision file detected — provisioning in progress")
+			statusLED.RapidPulse()
+		}
+
 		// Ingest with full tracking
 		result, provisioned, err := ingest.Run(ingestCfg, database, sessionID)
 		if err != nil {
@@ -277,11 +349,17 @@ func runMaintenance(
 
 		if provisioned {
 			log.Println("device was just provisioned — reloading config and starting agent")
+			// Leave the rapid pulse on; the agent's first heartbeat flips it to
+			// solid once it confirms the portal connection.
 			newCfg, err := config.LoadOrDefault(ingestCfg.ConfigPath)
 			if err == nil {
 				*cfg = *newCfg
 				agent.Start(ctx, cfg, sm, database)
 			}
+		} else if provisioning {
+			// A provision file was present but provisioning didn't complete →
+			// return to "not connected".
+			statusLED.SlowPulse()
 		}
 
 		log.Printf("ingest: found=%d copied=%d skipped=%d bytes=%d",
@@ -290,6 +368,17 @@ func runMaintenance(
 			"found=%d copied=%d skipped=%d bytes=%d",
 			result.FilesFound, result.FilesCopied, result.Skipped, result.BytesCopied,
 		))
+
+		// Space-based retention while the drive is still mounted: free room by
+		// deleting the oldest already-uploaded files if over threshold.
+		if cfg.RetentionEnabled {
+			if n, err := ingest.ApplyRetention(ingestCfg, database, cfg.RetentionThresholdPercent); err != nil {
+				log.Println("retention error:", err)
+			} else if n > 0 {
+				log.Printf("retention: deleted %d uploaded file(s) to free space", n)
+				database.Log("info", "retention", fmt.Sprintf("deleted %d uploaded files", n))
+			}
+		}
 
 		// Unmount local filesystem
 		if err := ingest.Unmount(ingestCfg); err != nil {

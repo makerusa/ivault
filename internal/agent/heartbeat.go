@@ -11,27 +11,93 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
 	"github.com/makerusa/ivault/internal/config"
 	"github.com/makerusa/ivault/internal/db"
+	"github.com/makerusa/ivault/internal/led"
+	"github.com/makerusa/ivault/internal/secret"
 	"github.com/makerusa/ivault/internal/state"
 	"github.com/makerusa/ivault/internal/upload"
 )
+
+// statusLED reflects portal-connection status: solid when a heartbeat
+// succeeds, slow pulse when it fails or the device isn't provisioned. Set by
+// main via SetStatusLED; nil-safe.
+var statusLED *led.Indicator
+
+// SetStatusLED wires the shared status LED into the agent.
+func SetStatusLED(i *led.Indicator) { statusLED = i }
+
+// secretMgr encrypts/decrypts the cached destinations blob (cloud refresh
+// tokens, passwords) at rest in the SQLite config table. Initialised in Start.
+var secretMgr *secret.Manager
+
+// encryptBlob encrypts s for storage; returns plaintext unchanged if the
+// secret manager is unavailable (best-effort, never blocks persistence).
+func encryptBlob(s string) string {
+	if secretMgr == nil {
+		return s
+	}
+	if enc, err := secretMgr.Encrypt(s); err == nil {
+		return enc
+	}
+	return s
+}
+
+// decryptBlob reverses encryptBlob. Legacy plaintext (no version marker) is
+// returned as-is so it migrates to ciphertext on the next write.
+func decryptBlob(s string) string {
+	if secretMgr == nil {
+		return s
+	}
+	if dec, err := secretMgr.Decrypt(s); err == nil {
+		return dec
+	}
+	return s
+}
+
+// agentStarted ensures the heartbeat loop is launched at most once. main calls
+// Start at boot and again from the runtime provision-file handler, so without
+// this guard a device provisioned at runtime would run two heartbeat loops and
+// leak a duplicate state-change handler.
+var agentStarted atomic.Bool
 
 // Start begins the heartbeat loop in a background goroutine.
 // sm is used to read the current device state for each heartbeat.
 func Start(ctx context.Context, cfg *config.Config, sm *state.Machine, database *db.DB) {
 	if cfg.DeviceID == "" || cfg.DeviceAPIKey == "" || cfg.CloudEndpoint == "" {
 		log.Println("agent: device not provisioned, skipping heartbeat")
+		if statusLED != nil {
+			statusLED.SlowPulse() // not provisioned → not connected
+		}
 		return
+	}
+
+	// Guard after the provisioned check so a boot-time skip (not yet
+	// provisioned) doesn't prevent a later real start once provisioned.
+	if !agentStarted.CompareAndSwap(false, true) {
+		log.Println("agent: heartbeat already running — skipping duplicate Start")
+		return
+	}
+
+	// Initialise at-rest encryption for cached credentials. Key lives beside
+	// the DB, root-only. On failure we log and continue with plaintext rather
+	// than block the appliance.
+	if mgr, err := secret.NewManager(filepath.Join(filepath.Dir(cfg.DBPath), "secret.key")); err != nil {
+		log.Printf("agent: could not init credential encryption (%v); destinations stored unencrypted", err)
+	} else {
+		secretMgr = mgr
 	}
 
 	// Load persisted destinations on startup for offline resilience
 	if val, err := database.GetConfig("active_destinations"); err == nil && val != "" {
+		val = decryptBlob(val)
 		var rawDests []json.RawMessage
 		if err := json.Unmarshal([]byte(val), &rawDests); err == nil {
 			UpdateActiveDestinations(rawDests)
@@ -84,7 +150,7 @@ func Start(ctx context.Context, cfg *config.Config, sm *state.Machine, database 
 }
 
 func sendHeartbeat(cfg *config.Config, sm *state.Machine, database *db.DB) {
-	stats, err := CollectStats("/nvme", cfg.ImagePath, cfg.UploadQueue)
+	stats, err := CollectStats("/nvme", cfg.ImagePath, cfg.MountPoint, cfg.UploadQueue)
 	if err != nil {
 		log.Printf("agent: failed to collect stats: %v", err)
 	}
@@ -93,14 +159,31 @@ func sendHeartbeat(cfg *config.Config, sm *state.Machine, database *db.DB) {
 	currentStatus := sm.State().String()
 	discovered := GlobalDiscovery.GetDevices()
 
+	// File delta: send only files changed since the watermark the portal last
+	// acknowledged. New files carry full detail; subsequent heartbeats carry
+	// just the ones whose state moved. Capped so a big backlog trickles up.
+	watermark, _ := database.GetConfig("file_sync_watermark")
+	changed, err := database.GetFilesChangedSince(watermark, 200)
+	if err != nil {
+		log.Printf("agent: failed to read file changes: %v", err)
+	}
+	newWatermark := watermark
+	for _, c := range changed {
+		if c.UpdatedAt > newWatermark {
+			newWatermark = c.UpdatedAt
+		}
+	}
+
 	payload := struct {
 		Stats
 		Status            *string            `json:"status"`
 		DiscoveredDevices []DiscoveredDevice `json:"discoveredDevices"`
+		Files             []db.FileChange    `json:"files"`
 	}{
 		Stats:             stats,
 		Status:            &currentStatus,
 		DiscoveredDevices: discovered,
+		Files:             changed,
 	}
 	body, _ := json.Marshal(payload)
 	url := fmt.Sprintf("%s/api/devices/%s/heartbeat", cfg.CloudEndpoint, cfg.DeviceID)
@@ -119,13 +202,33 @@ func sendHeartbeat(cfg *config.Config, sm *state.Machine, database *db.DB) {
 	resp, err := client.Do(req)
 	if err != nil {
 		log.Printf("agent: heartbeat failed: %v", err)
+		if statusLED != nil {
+			statusLED.SlowPulse() // can't reach portal → not connected
+		}
 		return
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		log.Printf("agent: portal returned status %d", resp.StatusCode)
+		if statusLED != nil {
+			statusLED.SlowPulse()
+		}
 		return
+	}
+
+	// Connected: provisioned and portal reachable.
+	if statusLED != nil {
+		statusLED.Solid()
+	}
+
+	// Portal acknowledged delivery — advance the file-sync watermark so acked
+	// changes are not resent. On a failed heartbeat we skip this, so those
+	// changes stay pending and are retried next time (at-least-once).
+	if len(changed) > 0 && newWatermark != watermark {
+		if err := database.SetConfig("file_sync_watermark", newWatermark); err != nil {
+			log.Printf("agent: failed to persist file sync watermark: %v", err)
+		}
 	}
 
 	// Check for remote commands and configuration sync
@@ -199,7 +302,7 @@ func sendHeartbeat(cfg *config.Config, sm *state.Machine, database *db.DB) {
 			log.Printf("agent: persisting %d active destinations to local SQLite database config table...", len(response.Destinations))
 			bytes, err := json.Marshal(response.Destinations)
 			if err == nil {
-				if err := database.SetConfig("active_destinations", string(bytes)); err != nil {
+				if err := database.SetConfig("active_destinations", encryptBlob(string(bytes))); err != nil {
 					log.Printf("agent: failed to persist active destinations to local database: %v", err)
 				} else {
 					log.Println("agent: successfully persisted active destinations to local SQLite database config table")

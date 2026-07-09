@@ -5,10 +5,15 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
 )
+
+// Version is the firmware version reported to the portal. Override at build
+// time with -ldflags "-X github.com/makerusa/ivault/internal/agent.Version=..."
+var Version = "0.2.0"
 
 type Stats struct {
 	CPUPercent    float64 `json:"cpuPercent"`
@@ -41,7 +46,7 @@ type Stats struct {
 	QueueSizeGb    float64 `json:"queueSizeGb"`
 }
 
-func CollectStats(nvmePath string, imagePath string, uploadQueue string) (Stats, error) {
+func CollectStats(nvmePath string, imagePath string, mountPoint string, uploadQueue string) (Stats, error) {
 	var s Stats
 
 	// 1. CPU Usage
@@ -79,7 +84,7 @@ func CollectStats(nvmePath string, imagePath string, uploadQueue string) (Stats,
 	// 6. System Info
 	s.KernelVersion = getKernelVersion()
 	s.ArmbianVersion = getArmbianVersion()
-	s.FirmwareVersion = "iVault v0.1.0" // Hardcoded for now
+	s.FirmwareVersion = Version
 
 	// 7. Networking
 	s.NetworkInterface = getPrimaryInterface()
@@ -96,10 +101,14 @@ func CollectStats(nvmePath string, imagePath string, uploadQueue string) (Stats,
 			s.VirtualDriveTotalGb = float64(info.Size()) / (1024 * 1024 * 1024)
 		}
 	}
-	// If it's mounted, we can get internal usage
-	if vUsed, vTotal, err := getDiskUsage("/mnt/ivault"); err == nil {
-		s.VirtualDriveUsedGb = vUsed
-		s.VirtualDriveTotalGb = vTotal // Use the live stat if available
+	// If the image is currently mounted internally (during a maintenance
+	// cycle), report live usage from the real mount point. Otherwise the host
+	// owns the filesystem and only the image size (above) is available.
+	if mountPoint != "" {
+		if vUsed, vTotal, err := getDiskUsage(mountPoint); err == nil {
+			s.VirtualDriveUsedGb = vUsed
+			s.VirtualDriveTotalGb = vTotal // live stat when mounted
+		}
 	}
 
 	// 9. Queue
@@ -132,8 +141,11 @@ func getCPUUsage() (float64, error) {
 		return 0, err
 	}
 
-	// Rock 5T has 8 cores
-	usage := (load1 / 8.0) * 100.0
+	cores := runtime.NumCPU()
+	if cores < 1 {
+		cores = 1
+	}
+	usage := (load1 / float64(cores)) * 100.0
 	if usage > 100 {
 		usage = 100
 	}

@@ -26,6 +26,14 @@ type ProvisionFile struct {
 	Network       NetworkConfig `json:"network"`
 }
 
+// Detect reports whether a provision file is present at mountPoint, without
+// processing it. Used to light the "provisioning in progress" indicator as
+// early as possible.
+func Detect(mountPoint string) bool {
+	_, err := os.Stat(filepath.Join(mountPoint, "ivault.provision"))
+	return err == nil
+}
+
 // Process checks for ivault.provision in the mount point, and if found,
 // executes the provisioning sequence. Returns (true, nil) if provisioning
 // was successful, (false, nil) if no file was found, or (false, error) on failure.

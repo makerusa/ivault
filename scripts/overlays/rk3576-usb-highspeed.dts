@@ -1,0 +1,43 @@
+/dts-v1/;
+/plugin/;
+
+/*
+ * iVault USB OTG stabilization overlay for RK3576 boards
+ * (e.g. Seeed reComputer RK3576).
+ *
+ * The RK3576 USB3 OTG controller (dwc3 at /usb@23000000) defaults to
+ * attempting a SuperSpeed (USB 3) link. In peripheral/gadget mode this link
+ * is frequently unstable — the host repeatedly resets and disconnects the
+ * device (visible as "dwc3 ...: device reset / device disconnect" in dmesg),
+ * so a host such as macOS never holds the mass-storage device long enough to
+ * mount it.
+ *
+ * This overlay pins the controller to:
+ *   - maximum-speed = "high-speed"  -> USB 2.0 (480 Mbps) only, no SuperSpeed
+ *   - dr_mode       = "peripheral"  -> device-only, no OTG role switching
+ *
+ * Both are correct for a dedicated USB-storage appliance: recording devices
+ * expect USB 2.0 mass storage, and the port is only ever a peripheral.
+ *
+ * Install (Armbian):
+ *   sudo armbian-add-overlay scripts/overlays/rk3576-usb-highspeed.dts
+ *   sudo reboot
+ *
+ * Verify after reboot:
+ *   tr -d '\0' < /sys/firmware/devicetree/base/usb@23000000/maximum-speed
+ *   # -> high-speed
+ *
+ * Note: the target node path (/usb@23000000) is specific to the RK3576.
+ * On other boards, find it with:
+ *   readlink -f /sys/class/udc/*/device/of_node
+ */
+
+/ {
+    fragment@0 {
+        target-path = "/usb@23000000";
+        __overlay__ {
+            maximum-speed = "high-speed";
+            dr_mode = "peripheral";
+        };
+    };
+};

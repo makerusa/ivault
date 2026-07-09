@@ -1,4 +1,4 @@
-package ingest_test
+package ingest
 
 import (
 	"crypto/sha256"
@@ -7,10 +7,6 @@ import (
 	"path/filepath"
 	"testing"
 )
-
-// copyAndVerify is internal to the ingest package, so we test it here via
-// a package-level test that exercises the same logic independently.
-// The real function lives in ingest.go.
 
 func sha256Hex(data []byte) string {
 	h := sha256.Sum256(data)
@@ -22,15 +18,13 @@ func TestCopyAndVerify_Success(t *testing.T) {
 	src := filepath.Join(dir, "source.bin")
 	dst := filepath.Join(dir, "dest.bin")
 
-	content := []byte("iVault test payload — video frame data")
+	content := []byte("relay test payload — video frame data")
 	if err := os.WriteFile(src, content, 0644); err != nil {
 		t.Fatal(err)
 	}
 
-	expectedChecksum := sha256Hex(content)
-
-	// Replicate the copyAndVerify logic
-	if err := testCopyAndVerify(src, dst, expectedChecksum); err != nil {
+	// Exercise the REAL copyAndVerify (white-box, same package).
+	if err := copyAndVerify(src, dst, sha256Hex(content)); err != nil {
 		t.Fatalf("copyAndVerify failed: %v", err)
 	}
 
@@ -39,7 +33,7 @@ func TestCopyAndVerify_Success(t *testing.T) {
 		t.Fatal("dst file should exist after successful copy")
 	}
 	if string(got) != string(content) {
-		t.Error("destination file content does not match source")
+		t.Error("destination content does not match source")
 	}
 }
 
@@ -48,67 +42,31 @@ func TestCopyAndVerify_ChecksumMismatch(t *testing.T) {
 	src := filepath.Join(dir, "source.bin")
 	dst := filepath.Join(dir, "dest.bin")
 
-	content := []byte("original content")
-	if err := os.WriteFile(src, content, 0644); err != nil {
+	if err := os.WriteFile(src, []byte("original content"), 0644); err != nil {
 		t.Fatal(err)
 	}
 
-	wrongChecksum := sha256Hex([]byte("different content"))
-
-	err := testCopyAndVerify(src, dst, wrongChecksum)
-	if err == nil {
+	if err := copyAndVerify(src, dst, sha256Hex([]byte("different content"))); err == nil {
 		t.Fatal("expected error on checksum mismatch, got nil")
 	}
-
 	if _, statErr := os.Stat(dst); !os.IsNotExist(statErr) {
 		t.Error("destination file should be deleted on checksum mismatch")
 	}
 }
 
-// testCopyAndVerify is a local copy of ingest.copyAndVerify for white-box
-// testing without exporting the function.
-func testCopyAndVerify(src, dst, expectedChecksum string) error {
-	import_sha256 := sha256.New
-	_ = import_sha256 // keep import
-
-	in, err := os.Open(src)
-	if err != nil {
-		return err
+func TestIsSystemFileOrInHiddenFolder(t *testing.T) {
+	cases := map[string]bool{
+		"video.mp4":                 false,
+		"folder/clip.mov":           false,
+		".DS_Store":                 true,
+		"._resourcefork":            true,
+		".hidden/file.txt":          true,
+		"ivault.provision":          true,
+		"sub/ivault-provision.json": true,
 	}
-	defer in.Close()
-
-	out, err := os.Create(dst)
-	if err != nil {
-		return err
-	}
-	defer out.Close()
-
-	hasher := sha256.New()
-
-	buf := make([]byte, 32*1024)
-	for {
-		n, readErr := in.Read(buf)
-		if n > 0 {
-			if _, err := out.Write(buf[:n]); err != nil {
-				os.Remove(dst)
-				return err
-			}
-			hasher.Write(buf[:n])
-		}
-		if readErr != nil {
-			break
+	for path, want := range cases {
+		if got := isSystemFileOrInHiddenFolder(filepath.FromSlash(path)); got != want {
+			t.Errorf("isSystemFileOrInHiddenFolder(%q) = %v, want %v", path, got, want)
 		}
 	}
-
-	if err := out.Sync(); err != nil {
-		os.Remove(dst)
-		return err
-	}
-
-	got := fmt.Sprintf("%x", hasher.Sum(nil))
-	if got != expectedChecksum {
-		os.Remove(dst)
-		return fmt.Errorf("checksum mismatch after copy (expected %s, got %s) — file deleted", expectedChecksum, got)
-	}
-	return nil
 }

@@ -1,5 +1,7 @@
-# iVault Cloud Portal — UI Specification
-**Version:** 0.1.0 | **Status:** Draft
+# MakerUSA Relay — Cloud Portal UI Specification
+**Status:** Design draft — reference for portal development
+
+> Design intent for the cloud portal, not a description of current behavior.
 
 ---
 
