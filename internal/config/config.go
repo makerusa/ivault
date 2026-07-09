@@ -30,6 +30,10 @@ type Config struct {
 	RcloneRemote  string `json:"rclone_remote"`  // default: gdrive
 	RclonePath    string `json:"rclone_path"`    // default: iVault
 	UploadWorkers int    `json:"upload_workers"` // default: 2
+
+	// Scheduler — automatic interval-based maintenance
+	ScheduleEnabled         bool `json:"schedule_enabled"`          // default: true
+	ScheduleIntervalMinutes int  `json:"schedule_interval_minutes"` // default: 60
 }
 
 // Default returns a Config populated with the reference Rock 5T defaults.
@@ -43,6 +47,9 @@ func Default() *Config {
 		RcloneRemote:  "gdrive",
 		RclonePath:    "iVault",
 		UploadWorkers: 2,
+
+		ScheduleEnabled:         true,
+		ScheduleIntervalMinutes: 60,
 	}
 }
 

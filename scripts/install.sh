@@ -449,7 +449,9 @@ cat > "$CONFIG_FILE" <<EOF
   "udc_name": "${UDC_NAME}",
   "rclone_remote": "gdrive",
   "rclone_path": "iVault",
-  "upload_workers": 2
+  "upload_workers": 2,
+  "schedule_enabled": true,
+  "schedule_interval_minutes": 60
 }
 EOF
 ok "config written"

@@ -98,7 +98,7 @@ func Start(ctx context.Context, cfg *config.Config, sm *state.Machine, database 
 }
 
 func sendHeartbeat(cfg *config.Config, sm *state.Machine, database *db.DB) {
-	stats, err := CollectStats("/nvme", cfg.ImagePath, cfg.UploadQueue)
+	stats, err := CollectStats("/nvme", cfg.ImagePath, cfg.MountPoint, cfg.UploadQueue)
 	if err != nil {
 		log.Printf("agent: failed to collect stats: %v", err)
 	}

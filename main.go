@@ -166,8 +166,26 @@ func main() {
 	signal.Notify(sigs, syscall.SIGTERM, syscall.SIGINT, syscall.SIGUSR1)
 	log.Println("Send SIGUSR1 to trigger maintenance: kill -USR1", os.Getpid())
 
+	// Automatic scheduler: fire a maintenance cycle on a fixed interval when
+	// enabled. A nil channel (disabled) simply never selects.
+	var scheduleC <-chan time.Time
+	if cfg.ScheduleEnabled && cfg.ScheduleIntervalMinutes > 0 {
+		ticker := time.NewTicker(time.Duration(cfg.ScheduleIntervalMinutes) * time.Minute)
+		defer ticker.Stop()
+		scheduleC = ticker.C
+		log.Printf("scheduler: automatic maintenance every %d minute(s)", cfg.ScheduleIntervalMinutes)
+	} else {
+		log.Println("scheduler: automatic maintenance disabled (trigger via SIGUSR1 or portal)")
+	}
+
 	for {
 		select {
+		case <-scheduleC:
+			log.Println("maintenance triggered by scheduler")
+			if fn := runMaintenance(ctx, sm, database, cfg, ingestCfg, uploadCfg, true); fn != nil {
+				holder.set(fn)
+			}
+
 		case sig := <-sigs:
 			switch sig {
 			case syscall.SIGUSR1:
