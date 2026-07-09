@@ -52,7 +52,7 @@ func Attach(imagePath, udcName string) error {
 		return err
 	}
 	stringWrites := map[string]string{
-		"strings/0x409/serialnumber": "relay-001",
+		"strings/0x409/serialnumber": deviceSerial(),
 		"strings/0x409/manufacturer": "Relay",
 		"strings/0x409/product":      "Relay Storage",
 	}
@@ -263,4 +263,17 @@ func IsAttached() bool {
 
 func writeFile(path, value string) error {
 	return os.WriteFile(path, []byte(value), 0644)
+}
+
+// deviceSerial returns a stable, per-device USB serial number. USB serials
+// should be unique per unit — a hardcoded value can confuse hosts that key on
+// it. Derived from /etc/machine-id, with a safe fallback.
+func deviceSerial() string {
+	if b, err := os.ReadFile("/etc/machine-id"); err == nil {
+		id := strings.TrimSpace(string(b))
+		if len(id) >= 12 {
+			return "relay-" + id[:12]
+		}
+	}
+	return "relay-000000000000"
 }
