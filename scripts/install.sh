@@ -261,8 +261,8 @@ fi
 
 INGEST_DIR="${MOUNT_ROOT}/ingest"
 QUEUE_DIR="${MOUNT_ROOT}/upload_queue"
-DB_DIR="${MOUNT_ROOT}/ivault"          # DB on storage, not the SD card, for durability
-DB_PATH="${DB_DIR}/ivault.db"
+DB_DIR="${MOUNT_ROOT}/relay"           # user-facing storage folder (holds DB + key)
+DB_PATH="${DB_DIR}/ivault.db"          # DB on storage, not the SD card, for durability
 
 # --- Show the plan and get one explicit confirmation before destroying data ---
 echo
@@ -333,11 +333,19 @@ format_ext4_and_mount() {   # format_ext4_and_mount <disk> <mountpoint>
     # the internal volume, leaving almost no space and breaking ingest with
     # "no space left on device".
     info "Partitioning ${disk} (single full-disk GPT partition)..."
-    # Fully release the disk first. On a re-install the old volume is mounted at
-    # $mnt — often WITH submounts (e.g. the external drive under $mnt/ingest) —
-    # so a plain `umount $disk*` misses them and parted then fails with
-    # "in use ... reboot now". Recursively unmount the mountpoint, unmount every
-    # partition on the disk, and force off any lingering holder.
+    # Remove any stale fstab entry for this mountpoint BEFORE touching the disk.
+    # wipefs on the parent disk does NOT clear a filesystem living inside a
+    # partition, so on a re-install the old ext4 survives; when the kernel
+    # re-reads the (identical) full-disk layout, systemd auto-mounts it via the
+    # fstab entry and then mkfs fails with "is mounted; will not make a
+    # filesystem here". Dropping the entry first prevents that auto-mount.
+    sed -i "\| ${mnt} |d" /etc/fstab
+    systemctl daemon-reload 2>/dev/null || true
+    # Fully release the disk. On a re-install the old volume is mounted at $mnt —
+    # often WITH submounts (e.g. the external drive under $mnt/ingest) — so a
+    # plain `umount $disk*` misses them and parted fails with "in use ... reboot
+    # now". Recursively unmount the mountpoint, unmount every partition on the
+    # disk, and force off any lingering holder.
     umount -R "$mnt" 2>/dev/null || true
     for p in "${disk}"p*; do
         [ -b "$p" ] && umount "$p" 2>/dev/null || true
@@ -349,14 +357,17 @@ format_ext4_and_mount() {   # format_ext4_and_mount <disk> <mountpoint>
     # Inform the kernel of the new table (partprobe, or partx as a fallback).
     partprobe "$disk" 2>/dev/null || partx -u "$disk" 2>/dev/null || true
     udevadm settle
+    # Clear any filesystem signature that survived inside the re-created
+    # partition, and unmount it in case udev auto-mounted it, before formatting.
+    wipefs -a -f "$part" 2>/dev/null || true
+    umount "$part" 2>/dev/null || true
     info "Formatting ${part} as ext4..."
     mkfs.ext4 -F "$part" >/dev/null
     mkdir -p "$mnt"
     local uuid; uuid="$(blkid -s UUID -o value "$part")"
-    # Drop any stale fstab entry for this mountpoint (an old UUID from a previous
-    # install would otherwise linger), then add the fresh one.
-    sed -i "\| ${mnt} |d" /etc/fstab
+    # fstab entry was removed above; add the fresh one for the new filesystem.
     echo "UUID=$uuid $mnt ext4 defaults,nofail 0 2" >> /etc/fstab
+    systemctl daemon-reload 2>/dev/null || true
     mountpoint -q "$mnt" && umount "$mnt" 2>/dev/null || true
     mount "$mnt"
     ok "internal storage ready at ${mnt} ($(size_of "$disk"))"
@@ -509,11 +520,11 @@ ok "config written"
 # ==============================================================================
 if [ "$INSTALL_SAMBA" = "1" ]; then
     hr
-    info "Configuring local NAS share (ivault-storage -> ${MOUNT_ROOT})..."
-    if ! grep -q "\[ivault-storage\]" /etc/samba/smb.conf 2>/dev/null; then
+    info "Configuring local NAS share (relay -> ${MOUNT_ROOT})..."
+    if ! grep -q "\[relay\]" /etc/samba/smb.conf 2>/dev/null; then
         cat >> /etc/samba/smb.conf <<EOT
 
-[ivault-storage]
+[relay]
    comment = MakerUSA Relay local storage
    path = ${MOUNT_ROOT}
    browseable = yes

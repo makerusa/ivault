@@ -122,7 +122,7 @@ case "$SAMBA" in
     lockdown)
         info "Locking down Samba share (no guest, read-only)"
         if [ "$DRY_RUN" = 0 ]; then
-            sed -i '/^\[ivault-storage\]/,/^$/{s/guest ok = yes/guest ok = no/; s/read only = no/read only = yes/}' /etc/samba/smb.conf 2>/dev/null || true
+            sed -i '/^\[relay\]/,/^$/{s/guest ok = yes/guest ok = no/; s/read only = no/read only = yes/}' /etc/samba/smb.conf 2>/dev/null || true
         fi
         run systemctl restart smbd || true
         warn "Set a Samba user to access it: sudo smbpasswd -a <user>"

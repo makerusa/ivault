@@ -176,8 +176,8 @@ NVMe (internal, ext4, mounted /nvme)
 ├── usb_disk.img       ← external USB drive (exFAT image; single-NVMe boards)
 ├── ingest/            ← temporary mount point during maintenance
 ├── upload_queue/      ← files staged for upload
-├── ivault/ivault.db   ← SQLite (file tracking, config, logs)
-└── ivault/secret.key  ← per-device key for at-rest credential encryption
+├── relay/ivault.db    ← SQLite (file tracking, config, logs)
+└── relay/secret.key   ← per-device key for at-rest credential encryption
 ```
 On dual-NVMe boards, a whole NVMe is dedicated as the external drive instead of
 an image file.
