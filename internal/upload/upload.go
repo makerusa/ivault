@@ -45,14 +45,14 @@ type Destination struct {
 }
 
 // MaskSecret safely masks a secret key/token/password for logging purposes.
+// It reveals only presence and length — never any characters of the secret —
+// because these logs are shipped to the portal (e.g. a refresh token's first/
+// last chars must not leak into the log pipeline).
 func MaskSecret(s string) string {
 	if s == "" {
 		return "<empty>"
 	}
-	if len(s) <= 8 {
-		return fmt.Sprintf("<present, len=%d>", len(s))
-	}
-	return fmt.Sprintf("%s...%s (len=%d)", s[:4], s[len(s)-4:], len(s))
+	return fmt.Sprintf("<present, len=%d>", len(s))
 }
 
 // LogDetails logs metadata about the destination while keeping credentials masked.
