@@ -311,19 +311,31 @@ info "Applying storage layout..."
 
 format_ext4_and_mount() {   # format_ext4_and_mount <disk> <mountpoint>
     local disk="$1" mnt="$2" part="${1}p1"
-    if ! lsblk -no NAME "${disk}" | grep -q "$(basename "${disk}")p1"; then
-        info "Partitioning ${disk} (single GPT partition)..."
-        wipefs -a -f "$disk" >/dev/null
-        parted -s "$disk" mklabel gpt mkpart primary ext4 1MiB 100%
-        partprobe "$disk"; udevadm settle
-    fi
+    # ALWAYS start from a clean, full-disk GPT partition. The storage-plan
+    # confirmation already warned this disk will be wiped, and the format below
+    # is unconditional anyway — so there is no data to preserve here.
+    #
+    # We must NOT reuse a pre-existing partition table: a disk that arrives with
+    # a foreign layout (e.g. a Windows GPT with a ~16 MB "Microsoft reserved"
+    # partition as p1) would otherwise get that tiny first partition formatted as
+    # the internal volume, leaving almost no space and breaking ingest with
+    # "no space left on device".
+    info "Partitioning ${disk} (single full-disk GPT partition)..."
+    umount "${disk}"* 2>/dev/null || true
+    wipefs -a -f "$disk" >/dev/null
+    parted -s "$disk" mklabel gpt mkpart primary ext4 1MiB 100%
+    partprobe "$disk"; udevadm settle
     info "Formatting ${part} as ext4..."
     mkfs.ext4 -F "$part" >/dev/null
     mkdir -p "$mnt"
     local uuid; uuid="$(blkid -s UUID -o value "$part")"
-    grep -q "$uuid" /etc/fstab || echo "UUID=$uuid $mnt ext4 defaults,nofail 0 2" >> /etc/fstab
-    mountpoint -q "$mnt" || mount "$mnt"
-    ok "internal storage ready at ${mnt}"
+    # Drop any stale fstab entry for this mountpoint (an old UUID from a previous
+    # install would otherwise linger), then add the fresh one.
+    sed -i "\| ${mnt} |d" /etc/fstab
+    echo "UUID=$uuid $mnt ext4 defaults,nofail 0 2" >> /etc/fstab
+    mountpoint -q "$mnt" && umount "$mnt" 2>/dev/null || true
+    mount "$mnt"
+    ok "internal storage ready at ${mnt} ($(size_of "$disk"))"
 }
 
 if [ -n "$INTERNAL_TARGET" ]; then
