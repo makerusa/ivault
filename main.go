@@ -166,21 +166,45 @@ func main() {
 	signal.Notify(sigs, syscall.SIGTERM, syscall.SIGINT, syscall.SIGUSR1)
 	log.Println("Send SIGUSR1 to trigger maintenance: kill -USR1", os.Getpid())
 
-	// Automatic scheduler: fire a maintenance cycle on a fixed interval when
-	// enabled. A nil channel (disabled) simply never selects.
+	// Automatic scheduler. "daily" ticks often but only acts inside the allowed
+	// window, once per day (so disconnects never interrupt a recording session);
+	// "interval" ticks at the configured interval, any time; "off" disables it.
+	// A nil channel simply never selects.
 	var scheduleC <-chan time.Time
-	if cfg.ScheduleEnabled && cfg.ScheduleIntervalMinutes > 0 {
-		ticker := time.NewTicker(time.Duration(cfg.ScheduleIntervalMinutes) * time.Minute)
-		defer ticker.Stop()
-		scheduleC = ticker.C
-		log.Printf("scheduler: automatic maintenance every %d minute(s)", cfg.ScheduleIntervalMinutes)
-	} else {
-		log.Println("scheduler: automatic maintenance disabled (trigger via SIGUSR1 or portal)")
+	lastDailyRun := ""
+	switch cfg.ScheduleMode {
+	case "interval":
+		if cfg.ScheduleIntervalMinutes > 0 {
+			t := time.NewTicker(time.Duration(cfg.ScheduleIntervalMinutes) * time.Minute)
+			defer t.Stop()
+			scheduleC = t.C
+			log.Printf("scheduler: interval mode — every %d minute(s)", cfg.ScheduleIntervalMinutes)
+		}
+	case "off":
+		log.Println("scheduler: off — manual sync only (SIGUSR1/portal)")
+	default: // "daily"
+		t := time.NewTicker(10 * time.Minute)
+		defer t.Stop()
+		scheduleC = t.C
+		log.Printf("scheduler: daily mode — one backup between %02d:00 and %02d:00",
+			cfg.ScheduleWindowStartHour, cfg.ScheduleWindowEndHour)
 	}
 
 	for {
 		select {
-		case <-scheduleC:
+		case now := <-scheduleC:
+			// In daily mode, only fire inside the allowed window and at most
+			// once per calendar day. Interval mode fires on every tick.
+			if cfg.ScheduleMode != "interval" {
+				if !inScheduleWindow(now, cfg.ScheduleWindowStartHour, cfg.ScheduleWindowEndHour) {
+					continue
+				}
+				day := now.Format("2006-01-02")
+				if day == lastDailyRun {
+					continue
+				}
+				lastDailyRun = day
+			}
 			log.Println("maintenance triggered by scheduler")
 			if fn := runMaintenance(ctx, sm, database, cfg, ingestCfg, uploadCfg, true); fn != nil {
 				holder.set(fn)
@@ -215,6 +239,19 @@ func main() {
 			}
 		}
 	}
+}
+
+// inScheduleWindow reports whether t's hour falls within [start, end).
+// Handles windows that wrap past midnight (start > end, e.g. 22..5).
+func inScheduleWindow(t time.Time, start, end int) bool {
+	h := t.Hour()
+	if start == end {
+		return true // full day
+	}
+	if start < end {
+		return h >= start && h < end
+	}
+	return h >= start || h < end
 }
 
 func runMaintenance(
@@ -308,6 +345,17 @@ func runMaintenance(
 			"found=%d copied=%d skipped=%d bytes=%d",
 			result.FilesFound, result.FilesCopied, result.Skipped, result.BytesCopied,
 		))
+
+		// Space-based retention while the drive is still mounted: free room by
+		// deleting the oldest already-uploaded files if over threshold.
+		if cfg.RetentionEnabled {
+			if n, err := ingest.ApplyRetention(ingestCfg, database, cfg.RetentionThresholdPercent); err != nil {
+				log.Println("retention error:", err)
+			} else if n > 0 {
+				log.Printf("retention: deleted %d uploaded file(s) to free space", n)
+				database.Log("info", "retention", fmt.Sprintf("deleted %d uploaded files", n))
+			}
+		}
 
 		// Unmount local filesystem
 		if err := ingest.Unmount(ingestCfg); err != nil {

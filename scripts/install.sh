@@ -450,8 +450,12 @@ cat > "$CONFIG_FILE" <<EOF
   "rclone_remote": "gdrive",
   "rclone_path": "iVault",
   "upload_workers": 2,
-  "schedule_enabled": true,
-  "schedule_interval_minutes": 60
+  "schedule_mode": "daily",
+  "schedule_interval_minutes": 60,
+  "schedule_window_start_hour": 2,
+  "schedule_window_end_hour": 5,
+  "retention_enabled": false,
+  "retention_threshold_percent": 80
 }
 EOF
 ok "config written"

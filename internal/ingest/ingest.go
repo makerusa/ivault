@@ -4,10 +4,12 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"github.com/makerusa/ivault/internal/db"
 	"github.com/makerusa/ivault/internal/provision"
@@ -152,6 +154,65 @@ func Run(cfg IngestConfig, database *db.DB, sessionID int64) (*IngestResult, boo
 	}
 
 	return result, provisioned, nil
+}
+
+// ApplyRetention frees space on the virtual drive when it exceeds
+// thresholdPercent by deleting the oldest already-uploaded files. It MUST be
+// called while the drive is mounted at cfg.MountPoint (i.e. mid-maintenance,
+// before Unmount). It only ever removes files the DB records as uploaded, and
+// stops as soon as usage drops back under the threshold. Returns the number of
+// files deleted.
+func ApplyRetention(cfg IngestConfig, database *db.DB, thresholdPercent int) (int, error) {
+	if thresholdPercent <= 0 || thresholdPercent >= 100 {
+		return 0, nil
+	}
+
+	usedPct, err := diskUsagePercent(cfg.MountPoint)
+	if err != nil {
+		return 0, fmt.Errorf("statfs %s: %w", cfg.MountPoint, err)
+	}
+	if usedPct < float64(thresholdPercent) {
+		return 0, nil
+	}
+
+	files, err := database.GetUploadedFilesEligibleForDeletion()
+	if err != nil {
+		return 0, fmt.Errorf("list uploaded files: %w", err)
+	}
+
+	deleted := 0
+	for _, f := range files {
+		if usedPct < float64(thresholdPercent) {
+			break
+		}
+		path := filepath.Join(cfg.MountPoint, f.Filename)
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			log.Printf("retention: could not delete %s: %v", f.Filename, err)
+			continue
+		}
+		if err := database.UpdateFileState(f.ID, db.FileDeleted); err != nil {
+			log.Printf("retention: could not mark %s deleted in db: %v", f.Filename, err)
+		}
+		deleted++
+		// Recompute after each delete; exFAT frees space immediately.
+		if usedPct, err = diskUsagePercent(cfg.MountPoint); err != nil {
+			break
+		}
+	}
+	return deleted, nil
+}
+
+func diskUsagePercent(path string) (float64, error) {
+	var st syscall.Statfs_t
+	if err := syscall.Statfs(path, &st); err != nil {
+		return 0, err
+	}
+	total := float64(st.Blocks)
+	if total == 0 {
+		return 0, nil
+	}
+	free := float64(st.Bfree)
+	return (total - free) / total * 100.0, nil
 }
 
 func isSystemFileOrInHiddenFolder(relPath string) bool {
