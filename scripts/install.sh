@@ -357,9 +357,15 @@ mkdir -p "$INGEST_DIR" "$QUEUE_DIR" "$DB_DIR" "$CONFIG_DIR"
 
 if [ "$BACKING_MODE" = "whole" ]; then
     info "Formatting ${OTG_DISK} as a whole-device exFAT superfloppy (label ${DRIVE_LABEL})..."
+    umount "${OTG_DISK}"* 2>/dev/null || true
     umount "$INGEST_DIR" 2>/dev/null || true
+    # Wipe any existing partition table AND filesystem signatures, then force the
+    # kernel to forget the old table — otherwise a stale partition (e.g. a prior
+    # nvme0n1p1) lingers in the kernel view even though the disk is now a clean
+    # whole-device superfloppy.
     wipefs -a -f "$OTG_DISK" >/dev/null
     mkfs.exfat -L "$DRIVE_LABEL" "$OTG_DISK" >/dev/null
+    partprobe "$OTG_DISK" 2>/dev/null || true; udevadm settle 2>/dev/null || true
     ok "external drive ready: ${OTG_DISK}"
 else
     if [ ! -f "$IMAGE_PATH" ]; then
