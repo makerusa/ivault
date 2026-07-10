@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -94,7 +95,7 @@ func CollectStats(nvmePath string, imagePath string, mountPoint string, uploadQu
 		s.IPAddress = getIPAddress(s.NetworkInterface)
 		s.MACAddress = getMACAddress(s.NetworkInterface)
 		s.LinkSpeed = getLinkSpeed(s.NetworkInterface)
-		// Mbps calc would need delta over time, skipping for now
+		s.NetworkRxMbps, s.NetworkTxMbps = networkRateMbps(s.NetworkInterface)
 	}
 
 	// 8. Virtual Drive (external USB-drive backing).
@@ -284,6 +285,81 @@ func getDiskUsage(path string) (float64, float64, error) {
 	used := total - free
 
 	return used / (1024 * 1024 * 1024), total / (1024 * 1024 * 1024), nil
+}
+
+// Network throughput sampler. We remember the previous rx/tx byte counters and
+// timestamp between heartbeats and derive Mbps from the delta — an average over
+// the (real) heartbeat interval, which is stabler and more meaningful than a
+// sub-second sample.
+var (
+	netMu        sync.Mutex
+	netLastRx    uint64
+	netLastTx    uint64
+	netLastTime  time.Time
+	netLastIface string
+)
+
+// networkRateMbps returns receive/transmit throughput in Mbps since the last
+// call for this interface. The first call (or after an interface change)
+// establishes a baseline and returns 0.
+func networkRateMbps(iface string) (rx, tx float64) {
+	rxBytes, txBytes, err := readNetBytes(iface)
+	if err != nil {
+		return 0, 0
+	}
+	now := time.Now()
+
+	netMu.Lock()
+	defer netMu.Unlock()
+
+	if netLastTime.IsZero() || iface != netLastIface {
+		netLastRx, netLastTx, netLastTime, netLastIface = rxBytes, txBytes, now, iface
+		return 0, 0
+	}
+	elapsed := now.Sub(netLastTime).Seconds()
+	prevRx, prevTx := netLastRx, netLastTx
+	netLastRx, netLastTx, netLastTime = rxBytes, txBytes, now
+	if elapsed <= 0 {
+		return 0, 0
+	}
+	// Guard against counter resets (interface down/up) producing a negative delta.
+	var dRx, dTx uint64
+	if rxBytes >= prevRx {
+		dRx = rxBytes - prevRx
+	}
+	if txBytes >= prevTx {
+		dTx = txBytes - prevTx
+	}
+	return rateMbps(dRx, elapsed), rateMbps(dTx, elapsed)
+}
+
+// rateMbps converts a byte delta over an elapsed interval to megabits/second.
+func rateMbps(deltaBytes uint64, elapsedSec float64) float64 {
+	if elapsedSec <= 0 {
+		return 0
+	}
+	return float64(deltaBytes) * 8 / elapsedSec / 1e6
+}
+
+func readNetBytes(iface string) (rx, tx uint64, err error) {
+	base := filepath.Join("/sys/class/net", iface, "statistics")
+	rb, err := os.ReadFile(filepath.Join(base, "rx_bytes"))
+	if err != nil {
+		return 0, 0, err
+	}
+	tb, err := os.ReadFile(filepath.Join(base, "tx_bytes"))
+	if err != nil {
+		return 0, 0, err
+	}
+	rx, err = strconv.ParseUint(strings.TrimSpace(string(rb)), 10, 64)
+	if err != nil {
+		return 0, 0, err
+	}
+	tx, err = strconv.ParseUint(strings.TrimSpace(string(tb)), 10, 64)
+	if err != nil {
+		return 0, 0, err
+	}
+	return rx, tx, nil
 }
 
 func getUptime() (float64, error) {

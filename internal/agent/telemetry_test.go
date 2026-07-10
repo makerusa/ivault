@@ -58,3 +58,17 @@ func TestIsMounted(t *testing.T) {
 		t.Error("bogus path should not be reported as mounted")
 	}
 }
+
+func TestRateMbps(t *testing.T) {
+	// 1,000,000 bytes/s = 8 Mbps.
+	if got := rateMbps(1_000_000, 1); got != 8.0 {
+		t.Errorf("rateMbps(1MB, 1s) = %f, want 8.0", got)
+	}
+	// 12,500,000 bytes over 1s = 100 Mbps.
+	if got := rateMbps(12_500_000, 1); got != 100.0 {
+		t.Errorf("rateMbps(12.5MB, 1s) = %f, want 100.0", got)
+	}
+	if got := rateMbps(1_000_000, 0); got != 0 {
+		t.Errorf("zero/negative elapsed must return 0, got %f", got)
+	}
+}
