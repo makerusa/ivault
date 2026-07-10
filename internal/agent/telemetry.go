@@ -39,8 +39,9 @@ type Stats struct {
 	KernelVersion   string `json:"kernelVersion"`
 
 	// Virtual Drive
-	VirtualDriveUsedGb  float64 `json:"virtualDriveUsedGb"`
-	VirtualDriveTotalGb float64 `json:"virtualDriveTotalGb"`
+	VirtualDriveUsedGb     float64 `json:"virtualDriveUsedGb"`
+	VirtualDriveTotalGb    float64 `json:"virtualDriveTotalGb"`
+	VirtualDriveMeasuredAt string  `json:"virtualDriveMeasuredAt,omitempty"` // when external usage was last read (during a maintenance mount)
 
 	// Queue
 	QueueFileCount int     `json:"queueFileCount"`

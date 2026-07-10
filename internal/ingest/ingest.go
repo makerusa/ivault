@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/makerusa/ivault/internal/db"
 	"github.com/makerusa/ivault/internal/provision"
@@ -96,6 +97,7 @@ func Run(cfg IngestConfig, database *db.DB, sessionID int64) (*IngestResult, boo
 	if used, total, uErr := diskUsageBytes(cfg.MountPoint); uErr == nil && total > 0 {
 		_ = database.SetConfig("ext_drive_used_bytes", strconv.FormatUint(used, 10))
 		_ = database.SetConfig("ext_drive_total_bytes", strconv.FormatUint(total, 10))
+		_ = database.SetConfig("ext_drive_measured_at", time.Now().UTC().Format(time.RFC3339))
 	}
 
 	err = filepath.WalkDir(cfg.MountPoint, func(path string, d os.DirEntry, err error) error {

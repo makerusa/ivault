@@ -150,6 +150,13 @@ func Start(ctx context.Context, cfg *config.Config, sm *state.Machine, database 
 	}()
 }
 
+// Destination-sync change detection: the portal returns the active destination
+// set on every heartbeat, but we only re-apply/persist it when it changes.
+var (
+	destSyncMu   sync.Mutex
+	lastDestJSON string
+)
+
 func sendHeartbeat(cfg *config.Config, sm *state.Machine, database *db.DB) {
 	// Measure internal storage on the filesystem that actually holds it (the
 	// upload queue lives there), not a hardcoded "/nvme" — the no-NVMe fallback
@@ -178,6 +185,11 @@ func sendHeartbeat(cfg *config.Config, sm *state.Machine, database *db.DB) {
 				stats.VirtualDriveTotalGb = float64(total) / (1024 * 1024 * 1024)
 			}
 		}
+	}
+	// Timestamp of the last external-usage measurement (subtle "updated N ago"
+	// hint in the UI), set whenever ingest last read the drive.
+	if v, e := database.GetConfig("ext_drive_measured_at"); e == nil && v != "" {
+		stats.VirtualDriveMeasuredAt = v
 	}
 
 	// Include the current device state and discovered local devices.
@@ -315,25 +327,33 @@ func sendHeartbeat(cfg *config.Config, sm *state.Machine, database *db.DB) {
 		}
 
 		if len(response.Destinations) > 0 {
-			UpdateActiveDestinations(response.Destinations)
-			log.Printf("agent: synced %d active destinations from portal", len(response.Destinations))
-			for i, raw := range response.Destinations {
-				var d upload.Destination
-				if err := json.Unmarshal(raw, &d); err == nil {
-					d.LogDetails(fmt.Sprintf("agent: [portal-sync] Destination #%d", i+1))
-				} else {
-					log.Printf("agent: [portal-sync] failed to parse destination #%d: %v", i+1, err)
-				}
+			// Only act when the destination set actually changed. The portal
+			// returns it on every heartbeat; re-applying + re-encrypting +
+			// re-writing it each time (and logging) is pure noise/churn.
+			cur, _ := json.Marshal(response.Destinations)
+			destSyncMu.Lock()
+			changed := string(cur) != lastDestJSON
+			if changed {
+				lastDestJSON = string(cur)
 			}
-			
-			// Persist dynamic destinations to local database config table for offline startup resilience
-			log.Printf("agent: persisting %d active destinations to local SQLite database config table...", len(response.Destinations))
-			bytes, err := json.Marshal(response.Destinations)
-			if err == nil {
-				if err := database.SetConfig("active_destinations", encryptBlob(string(bytes))); err != nil {
-					log.Printf("agent: failed to persist active destinations to local database: %v", err)
+			destSyncMu.Unlock()
+
+			if changed {
+				UpdateActiveDestinations(response.Destinations)
+				log.Printf("agent: destinations changed — %d active from portal", len(response.Destinations))
+				for i, raw := range response.Destinations {
+					var d upload.Destination
+					if err := json.Unmarshal(raw, &d); err == nil {
+						d.LogDetails(fmt.Sprintf("agent: [portal-sync] Destination #%d", i+1))
+					} else {
+						log.Printf("agent: [portal-sync] failed to parse destination #%d: %v", i+1, err)
+					}
+				}
+				// Persist for offline startup resilience.
+				if err := database.SetConfig("active_destinations", encryptBlob(string(cur))); err != nil {
+					log.Printf("agent: failed to persist active destinations: %v", err)
 				} else {
-					log.Println("agent: successfully persisted active destinations to local SQLite database config table")
+					log.Println("agent: persisted active destinations to local database")
 				}
 			}
 		}
