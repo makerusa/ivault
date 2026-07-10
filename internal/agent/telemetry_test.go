@@ -46,3 +46,15 @@ func TestGetCPUUsage_Range(t *testing.T) {
 		t.Errorf("cpu usage out of range: %f", usage)
 	}
 }
+
+func TestIsMounted(t *testing.T) {
+	if _, err := os.ReadFile("/proc/mounts"); err != nil {
+		t.Skip("/proc/mounts not readable")
+	}
+	if !isMounted("/") {
+		t.Error("root / should be reported as mounted")
+	}
+	if isMounted("/definitely/not/a/mount/point/xyz") {
+		t.Error("bogus path should not be reported as mounted")
+	}
+}

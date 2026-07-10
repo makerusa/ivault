@@ -104,8 +104,12 @@ func CollectStats(nvmePath string, imagePath string, mountPoint string, uploadQu
 	if total := virtualDriveTotalBytes(imagePath); total > 0 {
 		s.VirtualDriveTotalGb = float64(total) / (1024 * 1024 * 1024)
 	}
-	// If mounted internally during a maintenance cycle, report live used/total.
-	if mountPoint != "" {
+	// Only when the external drive is ACTUALLY mounted internally (during a
+	// maintenance cycle) do we report live used/total from it. Guard on a real
+	// mount: an unmounted ingest dir just resolves to the internal ext4, so an
+	// unguarded statfs(mountPoint) would clobber the external size with the
+	// internal filesystem's numbers (making Virtual Drive == NVMe Storage).
+	if mountPoint != "" && isMounted(mountPoint) {
 		if vUsed, vTotal, err := getDiskUsage(mountPoint); err == nil {
 			s.VirtualDriveUsedGb = vUsed
 			s.VirtualDriveTotalGb = vTotal // live stat when mounted
@@ -197,6 +201,23 @@ func virtualDriveTotalBytes(path string) int64 {
 		return blockDeviceSizeBytes(filepath.Base(path))
 	}
 	return fi.Size()
+}
+
+// isMounted reports whether target is an actual mount point (an entry in
+// /proc/mounts), as opposed to a plain directory on its parent filesystem.
+func isMounted(target string) bool {
+	data, err := os.ReadFile("/proc/mounts")
+	if err != nil {
+		return false
+	}
+	scanner := bufio.NewScanner(strings.NewReader(string(data)))
+	for scanner.Scan() {
+		fields := strings.Fields(scanner.Text())
+		if len(fields) >= 2 && fields[1] == target {
+			return true
+		}
+	}
+	return false
 }
 
 // blockDeviceSizeBytes reads a block device's capacity from sysfs. The `size`
