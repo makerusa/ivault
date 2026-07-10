@@ -236,8 +236,11 @@ func sendHeartbeat(cfg *config.Config, sm *state.Machine, database *db.DB) {
 		Commands      []string           `json:"commands"`
 		StorageConfig *json.RawMessage   `json:"storageConfig"`
 		Destinations  []json.RawMessage  `json:"destinations"`
+		LogLevel      string             `json:"logLevel"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&response); err == nil {
+		// Apply the portal's tier-effective log ship level (layer 1).
+		SetLogShipLevel(response.LogLevel)
 		for _, cmd := range response.Commands {
 			if cmd == "trigger_deep_scan" {
 				go GlobalDiscovery.TriggerDeepScan(context.Background())
