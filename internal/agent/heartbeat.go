@@ -150,7 +150,14 @@ func Start(ctx context.Context, cfg *config.Config, sm *state.Machine, database 
 }
 
 func sendHeartbeat(cfg *config.Config, sm *state.Machine, database *db.DB) {
-	stats, err := CollectStats("/nvme", cfg.ImagePath, cfg.MountPoint, cfg.UploadQueue)
+	// Measure internal storage on the filesystem that actually holds it (the
+	// upload queue lives there), not a hardcoded "/nvme" — the no-NVMe fallback
+	// layout mounts internal storage under /var/lib/ivault-storage instead.
+	internalPath := cfg.UploadQueue
+	if internalPath == "" {
+		internalPath = "/nvme"
+	}
+	stats, err := CollectStats(internalPath, cfg.ImagePath, cfg.MountPoint, cfg.UploadQueue)
 	if err != nil {
 		log.Printf("agent: failed to collect stats: %v", err)
 	}

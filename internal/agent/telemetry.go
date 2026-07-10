@@ -5,10 +5,11 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"runtime"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 )
 
 // Version is the firmware version reported to the portal. Override at build
@@ -95,15 +96,15 @@ func CollectStats(nvmePath string, imagePath string, mountPoint string, uploadQu
 		// Mbps calc would need delta over time, skipping for now
 	}
 
-	// 8. Virtual Drive (the image file itself)
-	if _, err := os.Stat(imagePath); err == nil {
-		if info, err := os.Stat(imagePath); err == nil {
-			s.VirtualDriveTotalGb = float64(info.Size()) / (1024 * 1024 * 1024)
-		}
+	// 8. Virtual Drive (external USB-drive backing).
+	// When the host owns the filesystem (not mounted internally) we can only
+	// report total capacity. os.Stat().Size() works for an image file but is 0
+	// for a block-device backing (whole-disk exFAT, e.g. /dev/nvme0n1) — that
+	// zero was why dual-NVMe boards showed a blank/0 external size.
+	if total := virtualDriveTotalBytes(imagePath); total > 0 {
+		s.VirtualDriveTotalGb = float64(total) / (1024 * 1024 * 1024)
 	}
-	// If the image is currently mounted internally (during a maintenance
-	// cycle), report live usage from the real mount point. Otherwise the host
-	// owns the filesystem and only the image size (above) is available.
+	// If mounted internally during a maintenance cycle, report live used/total.
 	if mountPoint != "" {
 		if vUsed, vTotal, err := getDiskUsage(mountPoint); err == nil {
 			s.VirtualDriveUsedGb = vUsed
@@ -126,30 +127,91 @@ func CollectStats(nvmePath string, imagePath string, mountPoint string, uploadQu
 	return s, nil
 }
 
+// getCPUUsage samples /proc/stat twice over a short interval and returns busy
+// percentage across all cores — true utilization, unlike a load-average
+// approximation (which lags reality and can read misleadingly high).
 func getCPUUsage() (float64, error) {
-	// Simple way: read /proc/loadavg and multiply by 100/cores
-	// A better way is to parse /proc/stat twice, but this is a quick fix.
-	f, err := os.Open("/proc/loadavg")
+	idle0, total0, err := readCPUSample()
 	if err != nil {
 		return 0, err
 	}
-	defer f.Close()
-
-	var load1 float64
-	_, err = fmt.Fscanf(f, "%f", &load1)
+	time.Sleep(100 * time.Millisecond)
+	idle1, total1, err := readCPUSample()
 	if err != nil {
 		return 0, err
 	}
-
-	cores := runtime.NumCPU()
-	if cores < 1 {
-		cores = 1
+	dTotal := float64(total1 - total0)
+	if dTotal <= 0 {
+		return 0, nil
 	}
-	usage := (load1 / float64(cores)) * 100.0
+	usage := (1 - float64(idle1-idle0)/dTotal) * 100
+	if usage < 0 {
+		usage = 0
+	}
 	if usage > 100 {
 		usage = 100
 	}
 	return usage, nil
+}
+
+// readCPUSample parses the aggregate "cpu" line of /proc/stat, returning idle
+// (idle + iowait) and total jiffies since boot.
+func readCPUSample() (idle, total uint64, err error) {
+	f, err := os.Open("/proc/stat")
+	if err != nil {
+		return 0, 0, err
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	if !scanner.Scan() {
+		return 0, 0, fmt.Errorf("empty /proc/stat")
+	}
+	fields := strings.Fields(scanner.Text())
+	if len(fields) < 5 || fields[0] != "cpu" {
+		return 0, 0, fmt.Errorf("unexpected /proc/stat cpu line")
+	}
+	// fields[1:] = user nice system idle iowait irq softirq steal ...
+	for i, f := range fields[1:] {
+		v, e := strconv.ParseUint(f, 10, 64)
+		if e != nil {
+			continue
+		}
+		total += v
+		if i == 3 || i == 4 { // idle, iowait
+			idle += v
+		}
+	}
+	return idle, total, nil
+}
+
+// virtualDriveTotalBytes returns the total capacity of the external-drive
+// backing: file size for an image, or block-device capacity for a whole-disk
+// backing (os.Stat().Size() is 0 for a device node).
+func virtualDriveTotalBytes(path string) int64 {
+	fi, err := os.Stat(path)
+	if err != nil {
+		return 0
+	}
+	if fi.Mode()&os.ModeDevice != 0 {
+		return blockDeviceSizeBytes(filepath.Base(path))
+	}
+	return fi.Size()
+}
+
+// blockDeviceSizeBytes reads a block device's capacity from sysfs. The `size`
+// attribute is always in 512-byte sectors (a Linux convention, independent of
+// the device's logical block size), so bytes = sectors * 512.
+func blockDeviceSizeBytes(name string) int64 {
+	data, err := os.ReadFile(filepath.Join("/sys/class/block", name, "size"))
+	if err != nil {
+		return 0
+	}
+	sectors, err := strconv.ParseInt(strings.TrimSpace(string(data)), 10, 64)
+	if err != nil {
+		return 0
+	}
+	return sectors * 512
 }
 
 func getMemUsage() (float64, float64, error) {
