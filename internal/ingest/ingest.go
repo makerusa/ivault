@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 
@@ -57,6 +58,21 @@ func Unmount(cfg IngestConfig) error {
 	return nil
 }
 
+// diskUsageBytes returns used and total bytes of the filesystem mounted at path.
+func diskUsageBytes(path string) (used, total uint64, err error) {
+	var st syscall.Statfs_t
+	if err = syscall.Statfs(path, &st); err != nil {
+		return 0, 0, err
+	}
+	bsize := uint64(st.Bsize)
+	total = st.Blocks * bsize
+	free := st.Bfree * bsize
+	if free > total {
+		free = total
+	}
+	return total - free, total, nil
+}
+
 type IngestResult struct {
 	FilesFound  int
 	FilesCopied int
@@ -71,6 +87,15 @@ func Run(cfg IngestConfig, database *db.DB, sessionID int64) (*IngestResult, boo
 	provisioned, err := provision.Process(cfg.MountPoint, cfg.ConfigPath)
 	if err != nil {
 		return nil, false, fmt.Errorf("provisioning failed: %w", err)
+	}
+
+	// Record the external drive's usage while it's mounted here — the USB host
+	// owns the drive the rest of the time, so this is the only point we can
+	// statfs the exFAT. The heartbeat backfills these into telemetry so the
+	// portal shows real "Virtual Drive" usage instead of 0.
+	if used, total, uErr := diskUsageBytes(cfg.MountPoint); uErr == nil && total > 0 {
+		_ = database.SetConfig("ext_drive_used_bytes", strconv.FormatUint(used, 10))
+		_ = database.SetConfig("ext_drive_total_bytes", strconv.FormatUint(total, 10))
 	}
 
 	err = filepath.WalkDir(cfg.MountPoint, func(path string, d os.DirEntry, err error) error {

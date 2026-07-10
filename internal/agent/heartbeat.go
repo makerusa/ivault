@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -160,6 +161,23 @@ func sendHeartbeat(cfg *config.Config, sm *state.Machine, database *db.DB) {
 	stats, err := CollectStats(internalPath, cfg.ImagePath, cfg.MountPoint, cfg.UploadQueue)
 	if err != nil {
 		log.Printf("agent: failed to collect stats: %v", err)
+	}
+
+	// External-drive usage: CollectStats can only read it live during a
+	// maintenance mount. While the USB host owns the drive it's unmounted, so
+	// backfill the last usage that ingest measured and persisted, giving the
+	// portal a real "Virtual Drive" figure instead of 0.
+	if !isMounted(cfg.MountPoint) {
+		if v, e := database.GetConfig("ext_drive_used_bytes"); e == nil && v != "" {
+			if used, pe := strconv.ParseUint(v, 10, 64); pe == nil {
+				stats.VirtualDriveUsedGb = float64(used) / (1024 * 1024 * 1024)
+			}
+		}
+		if v, e := database.GetConfig("ext_drive_total_bytes"); e == nil && v != "" {
+			if total, pe := strconv.ParseUint(v, 10, 64); pe == nil && total > 0 {
+				stats.VirtualDriveTotalGb = float64(total) / (1024 * 1024 * 1024)
+			}
+		}
 	}
 
 	// Include the current device state and discovered local devices.
