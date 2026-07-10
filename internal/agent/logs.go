@@ -70,7 +70,7 @@ func classifyLevel(msg string) string {
 		strings.Contains(m, "could not") || strings.Contains(m, "unable to"):
 		return "ERROR"
 	case strings.Contains(m, "warn") || strings.Contains(m, "retry") ||
-		strings.Contains(m, "skipping") || strings.Contains(m, "stale"):
+		strings.Contains(m, "retrying"):
 		return "WARN"
 	default:
 		return "INFO"
