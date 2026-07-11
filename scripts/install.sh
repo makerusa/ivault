@@ -13,9 +13,12 @@
 #   - Radxa Rock 5T (RK3588, eMMC + 2x NVMe)
 #   - Seeed reComputer / other RK3576 boards (SD boot, 1x NVMe, no eMMC)
 #
-# It NEVER touches the disk you booted from, and it does NOT migrate your OS
-# root on its own (that can brick a headless board). Instead it detects the
-# best boot target and prints the exact steps for you to run later.
+# It NEVER touches the disk you booted from. When the board has onboard eMMC it
+# can optionally move the OS there first (--migrate-os-to-emmc, or an interactive
+# prompt) so the appliance boots card-free and every NVMe is freed for storage.
+# That migration is delegated to Armbian's own `armbian-install`, which writes
+# the Rockchip bootloader correctly for the board — the installer never rolls its
+# own root-copy, which could brick a headless device.
 # ==============================================================================
 set -euo pipefail
 
@@ -31,6 +34,7 @@ UDC_OVERRIDE=""       # --udc=NAME       force the USB Device Controller name
 DRIVE_LABEL="RELAY"   # --label=NAME     volume label shown on the host
 INSTALL_SAMBA=1       # --no-samba       skip the local NAS share
 DO_BUILD=1            # --no-build       skip compiling (binary already in place)
+MIGRATE_EMMC=0        # --migrate-os-to-emmc  copy the OS onto onboard eMMC first
 GO_VERSION="1.25.0"
 
 MOUNT_ROOT="/nvme"    # internal storage mount point
@@ -78,6 +82,7 @@ for arg in "$@"; do
         --label=*)           DRIVE_LABEL="${arg#*=}" ;;
         --no-samba)          INSTALL_SAMBA=0 ;;
         --no-build)          DO_BUILD=0 ;;
+        --migrate-os-to-emmc) MIGRATE_EMMC=1 ;;
         -h|--help)
             grep '^# ' "$0" | sed 's/^# \{0,1\}//' | head -30
             exit 0 ;;
@@ -159,7 +164,7 @@ if [ -z "$UDC_NAME" ]; then
 fi
 
 # ==============================================================================
-# 2. BOOT TARGET ADVICE  (detect, recommend, DO NOT perform)
+# 2. BOOT TARGET  (optionally migrate the OS to eMMC, else advise)
 # ==============================================================================
 booted_from="unknown"
 case "$ROOT_DISK" in
@@ -168,22 +173,83 @@ case "$ROOT_DISK" in
     /dev/mmcblk*) booted_from="microSD" ;;
 esac
 
-if [ "$booted_from" = "microSD" ]; then
+# migrate_os_to_emmc: hand the running OS over to the onboard eMMC. We do NOT
+# copy the rootfs or write the bootloader ourselves — the Rockchip loader lives
+# at board-specific sector offsets and getting them wrong bricks a headless
+# board. Armbian ships `armbian-install`, which knows the correct layout for
+# every RK35xx target, so we delegate to it and then stop (the layout changes,
+# so storage setup must happen on the next boot from eMMC). Never runs without
+# an explicit opt-in.
+migrate_os_to_emmc() {
     hr
-    info "You are booting from microSD."
-    if [ -n "$EMMC_DISK" ]; then
-        echo "  This board has eMMC (${EMMC_DISK}). For a card-free, more reliable"
-        echo "  deployment you can migrate the OS to eMMC later with:"
-        echo "      ${c_dim}sudo armbian-install   # choose: system on eMMC${c_reset}"
-    elif [ "${#NVME_DISKS[@]}" -gt 0 ]; then
-        echo "  No eMMC on this board. You can optionally move the OS to NVMe later"
-        echo "  with  ${c_dim}sudo armbian-install${c_reset}  (choose the NVMe target). If you do,"
-        echo "  re-run this installer afterward so storage is laid out around the OS."
+    info "Migrating the OS to eMMC (${EMMC_DISK}, $(size_of "$EMMC_DISK"))"
+    warn "This ERASES ${EMMC_DISK} and rewrites its bootloader."
+
+    local ai=""
+    for c in armbian-install nand-sata-install; do
+        command -v "$c" >/dev/null 2>&1 && { ai="$c"; break; }
+    done
+    if [ -z "$ai" ]; then
+        warn "armbian-install is not on this image, so the OS cannot be migrated"
+        warn "safely (writing the RK bootloader by hand can brick the board)."
+        echo  "  Use a standard Armbian image that ships armbian-install, or migrate"
+        echo  "  manually, then re-run this installer. Continuing without migration."
+        return 1
     fi
-    echo "  ${c_dim}(The installer does not migrate the root filesystem itself — that"
-    echo "   step is interactive and best done deliberately.)${c_reset}"
-    echo "  Leaving the OS on microSD is fully supported; NVMe will be used for storage."
+
+    if ! confirm "Launch ${ai} to install the OS onto ${EMMC_DISK} now?"; then
+        info "Skipping eMMC migration."
+        return 1
+    fi
+
     echo
+    info "Launching ${ai}. In its menu choose:"
+    echo  "    ${c_bold}Boot from eMMC — system on eMMC${c_reset}  (select the eMMC target)."
+    echo  "  Keep the current filesystem type when asked."
+    echo
+    "$ai" || warn "${ai} exited non-zero — verify the eMMC install before rebooting."
+
+    echo
+    hr
+    ok "eMMC migration step finished."
+    echo "  ${c_bold}Next:${c_reset} power off, remove the microSD, boot from eMMC, then re-run"
+    echo "  this installer so storage is laid out around the eMMC-based OS:"
+    echo "      ${c_dim}sudo ./scripts/install.sh${c_reset}"
+    echo
+    exit 0
+}
+
+if [ -n "$EMMC_DISK" ] && [ "$EMMC_DISK" != "$ROOT_DISK" ]; then
+    hr
+    info "Onboard eMMC detected (${EMMC_DISK}, $(size_of "$EMMC_DISK")); currently booting from ${booted_from}."
+    echo "  Moving the OS to eMMC gives a card-free, more reliable deployment and"
+    echo "  frees every NVMe for storage."
+    if [ "$MIGRATE_EMMC" = "1" ]; then
+        migrate_os_to_emmc || true
+    elif [ "$ASSUME_YES" = "1" ]; then
+        echo "  ${c_dim}(--yes without --migrate-os-to-emmc: leaving the OS on ${booted_from}.)${c_reset}"
+    elif confirm "Migrate the OS to eMMC now?"; then
+        migrate_os_to_emmc || true
+    else
+        info "Leaving the OS on ${booted_from}. Migrate later with: sudo armbian-install"
+    fi
+    echo
+else
+    if [ "$MIGRATE_EMMC" = "1" ]; then
+        if [ -n "$EMMC_DISK" ] && [ "$EMMC_DISK" = "$ROOT_DISK" ]; then
+            info "--migrate-os-to-emmc: already booting from eMMC (${ROOT_DISK}); nothing to do."
+        else
+            warn "--migrate-os-to-emmc requested but no eMMC was detected; skipping."
+        fi
+    fi
+    if [ "$booted_from" = "microSD" ] && [ "${#NVME_DISKS[@]}" -gt 0 ]; then
+        hr
+        info "You are booting from microSD (no eMMC on this board)."
+        echo "  You can optionally move the OS to NVMe later with ${c_dim}sudo armbian-install${c_reset}"
+        echo "  (choose the NVMe target), then re-run this installer. Leaving the OS on"
+        echo "  microSD is fully supported; NVMe will be used for storage."
+        echo
+    fi
 fi
 
 # ==============================================================================

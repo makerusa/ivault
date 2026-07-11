@@ -90,11 +90,32 @@ The installer:
 - **Builds, configures, and starts** the systemd service.
 
 Flags: `--yes`, `--otg-disk=`, `--internal-disk=`, `--external-size=`,
-`--udc=`, `--label=`, `--no-samba`, `--no-build` (see `--help`).
+`--udc=`, `--label=`, `--no-samba`, `--no-build`, `--migrate-os-to-emmc`
+(see `--help`).
 
 > **Boot device:** the installer leaves your OS where it is and uses the NVMe
-> for storage. To run card-free from eMMC/NVMe, it prints the `armbian-install`
-> steps — it won't migrate a live root filesystem for you.
+> for storage. On a board with onboard **eMMC**, it offers to move the OS there
+> first (interactive prompt, or `--migrate-os-to-emmc`) so the appliance boots
+> card-free and every NVMe is freed for storage — see below. On boards without
+> eMMC it prints the `armbian-install` steps for moving to NVMe instead.
+
+### Move the OS to eMMC (optional)
+
+Boards with onboard eMMC (e.g. Rock 5T) run best card-free: the microSD comes
+out, boot is faster and more reliable, and both NVMe slots are freed for
+storage. When the installer detects eMMC and you booted from microSD/NVMe, it
+offers to migrate:
+
+```bash
+sudo ./scripts/install.sh --migrate-os-to-emmc   # or just answer "y" at the prompt
+```
+
+The migration itself is handed to Armbian's `armbian-install` (choose **Boot
+from eMMC — system on eMMC**), which writes the Rockchip bootloader at the
+correct offsets for your board — the installer never copies the root filesystem
+or writes a bootloader by hand, since getting that wrong can brick a headless
+device. When it finishes: power off, remove the microSD, boot from eMMC, and
+re-run `sudo ./scripts/install.sh` so storage is laid out around the new OS.
 
 ### USB troubleshooting (rare)
 
