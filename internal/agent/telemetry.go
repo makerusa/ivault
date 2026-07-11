@@ -99,7 +99,13 @@ func CollectStats(nvmePath string, imagePath string, mountPoint string, uploadQu
 		}
 		if t, wear, written, ok := nvmeSmart(dev); ok {
 			s.NvmeTempCelsius = &t
-			s.NvmeLifePercent = &wear
+			// SMART reports percentage *used* (wear); the portal shows "Life
+			// Remaining", so report the complement. 3% used -> 97% remaining.
+			remaining := 100 - wear
+			if remaining < 0 {
+				remaining = 0
+			}
+			s.NvmeLifePercent = &remaining
 			s.NvmeTotalWrittenTb = &written
 		}
 	}
