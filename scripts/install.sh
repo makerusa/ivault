@@ -505,11 +505,22 @@ if [ "$BACKING_MODE" = "whole" ]; then
     ok "external drive ready: ${otg_part} (exFAT in GPT)"
 else
     if [ ! -f "$IMAGE_PATH" ]; then
-        info "Creating ${EXTERNAL_SIZE} exFAT image at ${IMAGE_PATH}..."
+        info "Creating ${EXTERNAL_SIZE} exFAT image (GPT + partition) at ${IMAGE_PATH}..."
         fallocate -l "$EXTERNAL_SIZE" "$IMAGE_PATH" \
             || die "fallocate failed — not enough space for ${EXTERNAL_SIZE}?"
-        mkfs.exfat -L "$DRIVE_LABEL" "$IMAGE_PATH" >/dev/null
-        ok "external drive image ready: ${IMAGE_PATH}"
+        # Partition the image exactly like a whole disk (GPT + Microsoft Basic
+        # Data exFAT partition) so macOS mounts it on the host — partitionless
+        # exFAT is unreadable to macOS. Map the image through a loop device with
+        # partition scanning to format the partition, then detach. The agent
+        # mounts it the same way (losetup -P) for ingest.
+        parted -s "$IMAGE_PATH" mklabel gpt mkpart primary ntfs 1MiB 100%
+        img_loop="$(losetup -f --show -P "$IMAGE_PATH")"
+        udevadm settle 2>/dev/null || true
+        img_part="${img_loop}p1"
+        [ -b "$img_part" ] || img_part="${img_loop}1"
+        mkfs.exfat -L "$DRIVE_LABEL" "$img_part" >/dev/null
+        losetup -d "$img_loop"
+        ok "external drive image ready: ${IMAGE_PATH} (exFAT in GPT)"
     else
         warn "${IMAGE_PATH} already exists — leaving it as-is."
     fi

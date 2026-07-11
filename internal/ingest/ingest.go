@@ -44,18 +44,49 @@ func Mount(cfg IngestConfig) error {
 		return nil
 	}
 
-	// Fallback to loop image file mount
-	cmd := exec.Command("mount", "-o", "loop", cfg.ImagePath, cfg.MountPoint)
-	out, err := cmd.CombinedOutput()
+	// Image-file backing. Attach via a loop device with partition scanning
+	// (-P) so a partitioned image — GPT + exFAT partition, which is what lets
+	// macOS mount the drive on the host — exposes its partitions. A legacy
+	// partitionless ("superfloppy") image has no pN node and is mounted whole.
+	out, err := exec.Command("losetup", "-f", "--show", "-P", cfg.ImagePath).CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("mount loop failed: %w — %s", err, string(out))
+		return fmt.Errorf("losetup failed: %w — %s", err, string(out))
+	}
+	loop := strings.TrimSpace(string(out))
+	exec.Command("udevadm", "settle").Run()
+	target := loop
+	for i := 0; i < 20; i++ {
+		if _, statErr := os.Stat(loop + "p1"); statErr == nil {
+			target = loop + "p1"
+			break
+		}
+		// Partitionless images never grow a pN node; give a partitioned one a
+		// short moment for udev to create it, then fall back to the whole loop.
+		time.Sleep(50 * time.Millisecond)
+	}
+	mnt := exec.Command("mount", target, cfg.MountPoint)
+	if mo, mErr := mnt.CombinedOutput(); mErr != nil {
+		exec.Command("losetup", "-d", loop).Run() // release the loop we just created
+		return fmt.Errorf("mount loop failed: %w — %s", mErr, string(mo))
 	}
 	return nil
 }
 
 func Unmount(cfg IngestConfig) error {
-	cmd := exec.Command("umount", cfg.MountPoint)
-	cmd.CombinedOutput() // ignore "not mounted" errors
+	// Capture any loop device backing the image BEFORE unmounting, so we can
+	// detach it afterward. `mount -o loop` auto-detached on umount; an explicit
+	// losetup (used by Mount for partitioned images) does not, so a leaked loop
+	// would keep the backing file open and block the next reformat.
+	var loops []string
+	if !strings.HasPrefix(cfg.ImagePath, "/dev/") {
+		if out, err := exec.Command("losetup", "-j", cfg.ImagePath, "-O", "NAME", "-n").CombinedOutput(); err == nil {
+			loops = strings.Fields(string(out))
+		}
+	}
+	exec.Command("umount", cfg.MountPoint).CombinedOutput() // ignore "not mounted" errors
+	for _, l := range loops {
+		exec.Command("losetup", "-d", l).Run()
+	}
 	return nil
 }
 
