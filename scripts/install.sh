@@ -414,14 +414,27 @@ format_ext4_and_mount() {   # format_ext4_and_mount <disk> <mountpoint>
     # does NOT unmount, so we must: stop services, kill holders, THEN unmount,
     # and verify nothing on the disk is mounted before proceeding — retrying,
     # since the first pass often can't unmount until holders are gone.
+    #
+    # CRITICAL: only ever run `fuser -k` against a path that is ACTUALLY a
+    # mounted filesystem. `fuser -m /nvme` when /nvme is a plain directory on
+    # the root filesystem (the normal state before internal storage is mounted,
+    # e.g. a fresh re-install after moving the OS to eMMC) resolves to the ROOT
+    # filesystem and would kill EVERY process on the system — sshd, the
+    # installer, everything. Never pass the whole-disk path or an unmounted
+    # mountpoint to fuser; guard each call with a mount check.
     systemctl stop ivault.service smbd nmbd 2>/dev/null || true
     local freed=0
     for attempt in 1 2 3; do
-        command -v fuser >/dev/null 2>&1 && fuser -km "$mnt" "$disk" 2>/dev/null || true
-        umount -R "$mnt" 2>/dev/null || true
+        if mountpoint -q "$mnt"; then
+            command -v fuser >/dev/null 2>&1 && fuser -km "$mnt" 2>/dev/null || true
+            umount -R "$mnt" 2>/dev/null || umount -l "$mnt" 2>/dev/null || true
+        fi
         for p in "${disk}"p*; do
             [ -b "$p" ] || continue
-            umount "$p" 2>/dev/null || umount -l "$p" 2>/dev/null || true
+            if findmnt -S "$p" >/dev/null 2>&1; then
+                command -v fuser >/dev/null 2>&1 && fuser -km "$p" 2>/dev/null || true
+                umount "$p" 2>/dev/null || umount -l "$p" 2>/dev/null || true
+            fi
         done
         sync; sleep 1
         if ! mount | grep -q "$disk"; then freed=1; break; fi
