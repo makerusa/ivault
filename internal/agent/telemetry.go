@@ -55,6 +55,10 @@ type Stats struct {
 	// Queue
 	QueueFileCount int     `json:"queueFileCount"`
 	QueueSizeGb    float64 `json:"queueSizeGb"`
+
+	// Last successful sync (data reached the cloud), reported for the portal.
+	LastSyncAt          string `json:"lastSyncAt,omitempty"`
+	LastSyncDestination string `json:"lastSyncDestination,omitempty"`
 }
 
 func CollectStats(nvmePath string, imagePath string, mountPoint string, uploadQueue string) (Stats, error) {

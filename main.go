@@ -456,6 +456,18 @@ func runMaintenance(
 				}
 				log.Printf("uploaded %d files", len(uploaded))
 				database.Log("info", "upload", fmt.Sprintf("uploaded %d files", len(uploaded)))
+				// Record last successful sync (data reached the cloud) for the
+				// portal's "Last sync" — reported via the next heartbeat.
+				if len(uploaded) > 0 {
+					_ = database.SetConfig("last_sync_at", time.Now().UTC().Format(time.RFC3339))
+					if len(dests) > 0 {
+						name := dests[0].Name
+						if name == "" {
+							name = dests[0].Type
+						}
+						_ = database.SetConfig("last_sync_destination", name)
+					}
+				}
 				log.Println("--- maintenance cycle complete ---")
 			}()
 		} else {

@@ -191,6 +191,13 @@ func sendHeartbeat(cfg *config.Config, sm *state.Machine, database *db.DB) {
 	if v, e := database.GetConfig("ext_drive_measured_at"); e == nil && v != "" {
 		stats.VirtualDriveMeasuredAt = v
 	}
+	// Last successful sync (recorded on a successful upload cycle).
+	if v, e := database.GetConfig("last_sync_at"); e == nil && v != "" {
+		stats.LastSyncAt = v
+	}
+	if v, e := database.GetConfig("last_sync_destination"); e == nil && v != "" {
+		stats.LastSyncDestination = v
+	}
 
 	// Include the current device state and discovered local devices.
 	currentStatus := sm.State().String()
