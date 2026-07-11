@@ -472,17 +472,37 @@ fi
 mkdir -p "$INGEST_DIR" "$QUEUE_DIR" "$DB_DIR" "$CONFIG_DIR"
 
 if [ "$BACKING_MODE" = "whole" ]; then
-    info "Formatting ${OTG_DISK} as a whole-device exFAT superfloppy (label ${DRIVE_LABEL})..."
-    umount "${OTG_DISK}"* 2>/dev/null || true
+    info "Formatting ${OTG_DISK} as GPT + exFAT partition (label ${DRIVE_LABEL})..."
     umount "$INGEST_DIR" 2>/dev/null || true
-    # Wipe any existing partition table AND filesystem signatures, then force the
-    # kernel to forget the old table — otherwise a stale partition (e.g. a prior
-    # nvme0n1p1) lingers in the kernel view even though the disk is now a clean
-    # whole-device superfloppy.
+    for p in "$OTG_DISK" "${OTG_DISK}"p* "${OTG_DISK}"[0-9]*; do
+        [ -b "$p" ] || continue
+        umount "$p" 2>/dev/null || umount -l "$p" 2>/dev/null || true
+    done
+    # Wipe any existing table AND filesystem signatures so no stale layout
+    # lingers in the kernel's view — a prior partition, or a GPT a host wrote
+    # when it could not read our filesystem (see below).
     wipefs -a -f "$OTG_DISK" >/dev/null
-    mkfs.exfat -L "$DRIVE_LABEL" "$OTG_DISK" >/dev/null
+    # Create a single-partition GPT with an exFAT DATA PARTITION — NOT a
+    # whole-device ("superfloppy") filesystem. Windows mounts a superfloppy, but
+    # macOS does NOT reliably mount partitionless exFAT: it reports the disk as
+    # unreadable and offers to initialize it (which silently writes a GPT over
+    # our filesystem). A GPT + Microsoft-Basic-Data exFAT partition is exactly
+    # what macOS's own "Erase as exFAT, GUID scheme" produces, so it mounts on
+    # macOS, Windows, and Linux alike. The `ntfs` fs hint makes parted tag the
+    # partition as Microsoft Basic Data — the type macOS/Windows expect for
+    # exFAT. The gadget still backs onto the whole device, so the host sees the
+    # partition table and mounts p1; the agent mounts p1 for ingest (it already
+    # prefers ${device}p1 when present).
+    parted -s "$OTG_DISK" mklabel gpt mkpart primary ntfs 1MiB 100%
+    partprobe "$OTG_DISK" 2>/dev/null || partx -u "$OTG_DISK" 2>/dev/null || true
+    udevadm settle 2>/dev/null || true
+    otg_part="${OTG_DISK}p1"
+    [ -b "$otg_part" ] || otg_part="${OTG_DISK}1"
+    wipefs -a -f "$otg_part" 2>/dev/null || true
+    umount "$otg_part" 2>/dev/null || true
+    mkfs.exfat -L "$DRIVE_LABEL" "$otg_part" >/dev/null
     partprobe "$OTG_DISK" 2>/dev/null || true; udevadm settle 2>/dev/null || true
-    ok "external drive ready: ${OTG_DISK}"
+    ok "external drive ready: ${otg_part} (exFAT in GPT)"
 else
     if [ ! -f "$IMAGE_PATH" ]; then
         info "Creating ${EXTERNAL_SIZE} exFAT image at ${IMAGE_PATH}..."
