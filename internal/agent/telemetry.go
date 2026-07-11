@@ -28,11 +28,15 @@ type Stats struct {
 	NvmeTotalGb   float64 `json:"nvmeTotalGb"`
 	UptimeSeconds int     `json:"uptimeSeconds"`
 
-	// NVMe health (SMART) — omitted when unavailable so we don't overwrite good data with zeros.
+	// NVMe health (SMART) for the primary/internal drive — kept for the storage
+	// usage tile and backward compatibility. Omitted when unavailable.
 	NvmeModel          string   `json:"nvmeModel,omitempty"`
 	NvmeTempCelsius    *float64 `json:"nvmeTempCelsius,omitempty"`
 	NvmeLifePercent    *float64 `json:"nvmeLifePercent,omitempty"`
 	NvmeTotalWrittenTb *float64 `json:"nvmeTotalWrittenTb,omitempty"`
+
+	// Per-drive NVMe health for ALL installed drives (dual-NVMe boards).
+	NvmeDrives []NvmeDrive `json:"nvmeDrives,omitempty"`
 
 	// Networking
 	NetworkRxMbps    float64 `json:"networkRxMbps"`
@@ -109,6 +113,9 @@ func CollectStats(nvmePath string, imagePath string, mountPoint string, uploadQu
 			s.NvmeTotalWrittenTb = &written
 		}
 	}
+
+	// Per-drive health for all installed NVMe drives (internal + external).
+	s.NvmeDrives = collectNvmeDrives(nvmePath, imagePath)
 
 	// 5. Uptime
 	uptime, err := getUptime()
@@ -394,9 +401,68 @@ func readNetBytes(iface string) (rx, tx uint64, err error) {
 	return rx, tx, nil
 }
 
+// NvmeDrive is per-drive health for one NVMe device.
+type NvmeDrive struct {
+	Device         string   `json:"device"`               // e.g. /dev/nvme1n1
+	Role           string   `json:"role,omitempty"`       // "internal" | "external"
+	Model          string   `json:"model,omitempty"`
+	CapacityGb     float64  `json:"capacityGb,omitempty"`
+	TempCelsius    *float64 `json:"tempCelsius,omitempty"`
+	LifePercent    *float64 `json:"lifePercent,omitempty"` // remaining
+	TotalWrittenTb *float64 `json:"totalWrittenTb,omitempty"`
+}
+
+// collectNvmeDrives enumerates every NVMe namespace device and reports each
+// one's health, labelling the drive backing internal storage vs the external
+// (image_path) drive so the UI can name them.
+func collectNvmeDrives(internalPath, imagePath string) []NvmeDrive {
+	internalDev := nvmeDeviceForPath(internalPath)
+	externalDev := ""
+	if strings.HasPrefix(imagePath, "/dev/nvme") {
+		externalDev = nvmeBaseDevice(imagePath)
+	}
+
+	blocks, _ := filepath.Glob("/sys/block/nvme*") // namespace block devices, e.g. nvme0n1
+	drives := make([]NvmeDrive, 0, len(blocks))
+	for _, b := range blocks {
+		name := filepath.Base(b)
+		dev := "/dev/" + name
+		d := NvmeDrive{
+			Device:     dev,
+			Model:      nvmeModel(dev),
+			CapacityGb: float64(blockDeviceSizeBytes(name)) / (1024 * 1024 * 1024),
+		}
+		switch dev {
+		case internalDev:
+			d.Role = "internal"
+		case externalDev:
+			d.Role = "external"
+		}
+		if t, wear, written, ok := nvmeSmart(dev); ok {
+			rem := 100 - wear
+			if rem < 0 {
+				rem = 0
+			}
+			d.TempCelsius = &t
+			d.LifePercent = &rem
+			d.TotalWrittenTb = &written
+		}
+		drives = append(drives, d)
+	}
+	return drives
+}
+
 // ── NVMe SMART health ────────────────────────────────────────────────────────
 
 var nvmePartRe = regexp.MustCompile(`^(/dev/nvme\d+n\d+)p\d+$`)
+
+// nvmeBaseDevice strips a partition suffix: /dev/nvme1n1p1 -> /dev/nvme1n1.
+func nvmeBaseDevice(dev string) string {
+	if m := nvmePartRe.FindStringSubmatch(dev); m != nil {
+		return m[1]
+	}
+	return dev
+}
 
 // nvmeDeviceForPath resolves the NVMe namespace device backing a path, e.g.
 // "/nvme" -> "/dev/nvme1n1p1" -> "/dev/nvme1n1". Returns "" if the path isn't
@@ -410,10 +476,7 @@ func nvmeDeviceForPath(path string) string {
 	if !strings.HasPrefix(src, "/dev/nvme") {
 		return ""
 	}
-	if m := nvmePartRe.FindStringSubmatch(src); m != nil {
-		return m[1]
-	}
-	return src
+	return nvmeBaseDevice(src)
 }
 
 // nvmeModel reads the drive's model string from sysfs.
