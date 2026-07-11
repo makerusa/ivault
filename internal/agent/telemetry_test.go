@@ -72,3 +72,46 @@ func TestRateMbps(t *testing.T) {
 		t.Errorf("zero/negative elapsed must return 0, got %f", got)
 	}
 }
+
+func TestParseNvmeSmart_Kelvin(t *testing.T) {
+	// nvme-cli style with temperature in Kelvin and percent_used.
+	j := []byte(`{"temperature":313,"percent_used":4,"data_units_written":1953125}`)
+	temp, wear, writtenTB, ok := parseNvmeSmart(j)
+	if !ok {
+		t.Fatal("expected ok")
+	}
+	if temp < 39.8 || temp > 40.2 {
+		t.Errorf("temp = %f, want ~40 (313K)", temp)
+	}
+	if wear != 4 {
+		t.Errorf("wear = %f, want 4", wear)
+	}
+	// 1,953,125 units * 512,000 bytes = 1e12 bytes = 1.0 TB.
+	if writtenTB < 0.99 || writtenTB > 1.01 {
+		t.Errorf("writtenTB = %f, want ~1.0", writtenTB)
+	}
+}
+
+func TestParseNvmeSmart_CelsiusAndAltKey(t *testing.T) {
+	// temperature already in Celsius, alternate "percentage_used" key.
+	j := []byte(`{"temperature":45,"percentage_used":12,"data_units_written":0}`)
+	temp, wear, _, ok := parseNvmeSmart(j)
+	if !ok {
+		t.Fatal("expected ok")
+	}
+	if temp != 45 {
+		t.Errorf("temp = %f, want 45 (already Celsius)", temp)
+	}
+	if wear != 12 {
+		t.Errorf("wear = %f, want 12", wear)
+	}
+}
+
+func TestParseNvmeSmart_Garbage(t *testing.T) {
+	if _, _, _, ok := parseNvmeSmart([]byte("not json")); ok {
+		t.Error("garbage should not parse ok")
+	}
+	if _, _, _, ok := parseNvmeSmart([]byte(`{"unrelated":1}`)); ok {
+		t.Error("json without smart fields should return ok=false")
+	}
+}

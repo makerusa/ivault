@@ -2,10 +2,12 @@ package agent
 
 import (
 	"bufio"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -25,6 +27,12 @@ type Stats struct {
 	NvmeUsedGb    float64 `json:"nvmeUsedGb"`
 	NvmeTotalGb   float64 `json:"nvmeTotalGb"`
 	UptimeSeconds int     `json:"uptimeSeconds"`
+
+	// NVMe health (SMART) — omitted when unavailable so we don't overwrite good data with zeros.
+	NvmeModel          string   `json:"nvmeModel,omitempty"`
+	NvmeTempCelsius    *float64 `json:"nvmeTempCelsius,omitempty"`
+	NvmeLifePercent    *float64 `json:"nvmeLifePercent,omitempty"`
+	NvmeTotalWrittenTb *float64 `json:"nvmeTotalWrittenTb,omitempty"`
 
 	// Networking
 	NetworkRxMbps    float64 `json:"networkRxMbps"`
@@ -76,6 +84,20 @@ func CollectStats(nvmePath string, imagePath string, mountPoint string, uploadQu
 	if err == nil {
 		s.NvmeUsedGb = nvmeUsed
 		s.NvmeTotalGb = nvmeTotal
+	}
+
+	// 4b. NVMe SMART health for the drive backing the internal storage. Best
+	// effort: fields stay nil (and the portal keeps prior values) if nvme-cli
+	// or SMART isn't available.
+	if dev := nvmeDeviceForPath(nvmePath); dev != "" {
+		if m := nvmeModel(dev); m != "" {
+			s.NvmeModel = m
+		}
+		if t, wear, written, ok := nvmeSmart(dev); ok {
+			s.NvmeTempCelsius = &t
+			s.NvmeLifePercent = &wear
+			s.NvmeTotalWrittenTb = &written
+		}
 	}
 
 	// 5. Uptime
@@ -360,6 +382,80 @@ func readNetBytes(iface string) (rx, tx uint64, err error) {
 		return 0, 0, err
 	}
 	return rx, tx, nil
+}
+
+// ── NVMe SMART health ────────────────────────────────────────────────────────
+
+var nvmePartRe = regexp.MustCompile(`^(/dev/nvme\d+n\d+)p\d+$`)
+
+// nvmeDeviceForPath resolves the NVMe namespace device backing a path, e.g.
+// "/nvme" -> "/dev/nvme1n1p1" -> "/dev/nvme1n1". Returns "" if the path isn't
+// on an NVMe device.
+func nvmeDeviceForPath(path string) string {
+	out, err := exec.Command("findmnt", "-nro", "SOURCE", "--target", path).Output()
+	if err != nil {
+		return ""
+	}
+	src := strings.TrimSpace(string(out))
+	if !strings.HasPrefix(src, "/dev/nvme") {
+		return ""
+	}
+	if m := nvmePartRe.FindStringSubmatch(src); m != nil {
+		return m[1]
+	}
+	return src
+}
+
+// nvmeModel reads the drive's model string from sysfs.
+func nvmeModel(dev string) string {
+	data, err := os.ReadFile(filepath.Join("/sys/class/block", filepath.Base(dev), "device", "model"))
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(data))
+}
+
+// nvmeSmart shells out to nvme-cli for SMART data and returns temperature (°C),
+// wear (percentage of rated life used), and total data written (TB). Field-name
+// and temperature-unit variations across nvme-cli versions are handled.
+func nvmeSmart(dev string) (tempC, wearPct, writtenTB float64, ok bool) {
+	out, err := exec.Command("nvme", "smart-log", dev, "-o", "json").Output()
+	if err != nil {
+		return 0, 0, 0, false
+	}
+	return parseNvmeSmart(out)
+}
+
+// parseNvmeSmart extracts temperature/wear/data-written from nvme-cli JSON,
+// tolerating field-name and temperature-unit variation across versions.
+func parseNvmeSmart(out []byte) (tempC, wearPct, writtenTB float64, ok bool) {
+	var m map[string]any
+	if err := json.Unmarshal(out, &m); err != nil {
+		return 0, 0, 0, false
+	}
+	num := func(keys ...string) (float64, bool) {
+		for _, k := range keys {
+			if v, ok := m[k]; ok {
+				if f, ok := v.(float64); ok {
+					return f, true
+				}
+			}
+		}
+		return 0, false
+	}
+
+	temp, hasTemp := num("temperature")
+	if temp > 200 { // reported in Kelvin
+		temp -= 273.15
+	}
+	wear, _ := num("percent_used", "percentage_used")
+	// Each NVMe "data unit" is 1000 * 512 = 512,000 bytes.
+	units, _ := num("data_units_written")
+
+	if !hasTemp && wear == 0 && units == 0 {
+		return 0, 0, 0, false // nothing usable parsed
+	}
+	return temp, wear, units * 512000 / 1e12, true
 }
 
 func getUptime() (float64, error) {
