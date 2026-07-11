@@ -49,8 +49,19 @@ func migrate(conn *sql.DB) error {
 			COALESCE(uploaded_at, queued_at, copied_at, discovered_at,
 			         strftime('%Y-%m-%d %H:%M:%f','now'))
 			WHERE updated_at IS NULL`)
+		if err != nil {
+			return err
+		}
 	}
-	return err
+
+	// Transfer timing columns (issue #1).
+	if _, err := addColumnIfMissing(conn, "files", "ingest_ms", "INTEGER"); err != nil {
+		return err
+	}
+	if _, err := addColumnIfMissing(conn, "files", "upload_ms", "INTEGER"); err != nil {
+		return err
+	}
+	return nil
 }
 
 // addColumnIfMissing adds a column only if it isn't already present. table/col

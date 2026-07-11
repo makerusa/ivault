@@ -329,8 +329,24 @@ func sendHeartbeat(cfg *config.Config, sm *state.Machine, database *db.DB) {
 		}
 
 		if response.StorageConfig != nil {
-			// TODO: Compare with current hardware state and trigger resize/re-label if needed
-			// log.Printf("agent: received storage config sync: %s", string(*response.StorageConfig))
+			// Drive label/size/filesystem are install-time decisions (changing
+			// them post-install means repartition/reformat), so we don't act on
+			// them here. We DO honor the ingest file filters — persist them to
+			// the config table so the next ingest cycle enforces them.
+			var sc struct {
+				SkipSystemFiles   *bool    `json:"skipSystemFiles"`
+				AllowedExtensions []string `json:"allowedExtensions"`
+				SkipFilesUnderMb  *float64 `json:"skipFilesUnderMb"`
+			}
+			if err := json.Unmarshal(*response.StorageConfig, &sc); err == nil {
+				if sc.SkipSystemFiles != nil {
+					_ = database.SetConfig("filter_skip_system_files", strconv.FormatBool(*sc.SkipSystemFiles))
+				}
+				_ = database.SetConfig("filter_allowed_extensions", strings.Join(sc.AllowedExtensions, ","))
+				if sc.SkipFilesUnderMb != nil {
+					_ = database.SetConfig("filter_skip_files_under_mb", strconv.FormatFloat(*sc.SkipFilesUnderMb, 'f', -1, 64))
+				}
+			}
 		}
 
 		if len(response.Destinations) > 0 {

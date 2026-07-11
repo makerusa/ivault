@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"golang.org/x/sync/errgroup"
 
@@ -143,6 +144,7 @@ func UploadAll(ctx context.Context, database *db.DB, cfg UploadConfig) ([]string
 
 			database.UpdateFileState(f.ID, db.FileUploading)
 
+			uploadStart := time.Now()
 			if err := uploadFile(gctx, src, dst, target, remoteName); err != nil {
 				log.Printf("agent: upload FAILED for %s to %s: %v", f.Filename, dst, err)
 				if gctx.Err() != nil {
@@ -164,7 +166,9 @@ func UploadAll(ctx context.Context, database *db.DB, cfg UploadConfig) ([]string
 				return nil
 			}
 
+			uploadMs := time.Since(uploadStart).Milliseconds()
 			database.UpdateFileUploaded(f.ID, 0, dst) // TODO: Handle numeric/string ID conversion
+			_ = database.SetFileUploadMs(f.ID, uploadMs)
 			os.Remove(src)
 
 			mu.Lock()

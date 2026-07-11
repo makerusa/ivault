@@ -88,6 +88,26 @@ func (d *DB) UpdateFileState(id int64, state FileState) error {
 	return err
 }
 
+// SetFileIngestMs records how long the local ingest copy took (external drive
+// → upload_queue). Bumps updated_at so the timing reaches the portal via the
+// delta sync.
+func (d *DB) SetFileIngestMs(id, ms int64) error {
+	_, err := d.conn.Exec(
+		`UPDATE files SET ingest_ms = ?, updated_at = strftime('%Y-%m-%d %H:%M:%f','now') WHERE id = ?`,
+		ms, id,
+	)
+	return err
+}
+
+// SetFileUploadMs records how long the rclone upload out took.
+func (d *DB) SetFileUploadMs(id, ms int64) error {
+	_, err := d.conn.Exec(
+		`UPDATE files SET upload_ms = ?, updated_at = strftime('%Y-%m-%d %H:%M:%f','now') WHERE id = ?`,
+		ms, id,
+	)
+	return err
+}
+
 func (d *DB) UpdateFileError(id int64, msg string) error {
 	_, err := d.conn.Exec(`
 		UPDATE files SET
@@ -154,6 +174,8 @@ type FileChange struct {
 	DiscoveredAt   string `json:"discoveredAt,omitempty"`
 	UploadedAt     string `json:"uploadedAt,omitempty"`
 	UpdatedAt      string `json:"updatedAt"`
+	IngestMs       *int64 `json:"ingestMs,omitempty"`
+	UploadMs       *int64 `json:"uploadMs,omitempty"`
 }
 
 // GetFilesChangedSince returns files whose updated_at is strictly greater than
@@ -163,7 +185,8 @@ func (d *DB) GetFilesChangedSince(watermark string, limit int) ([]FileChange, er
 	rows, err := d.conn.Query(`
 		SELECT checksum_sha256, filename, size_bytes, state, upload_attempts,
 		       COALESCE(error_message, ''), COALESCE(discovered_at, ''),
-		       COALESCE(uploaded_at, ''), COALESCE(updated_at, '')
+		       COALESCE(uploaded_at, ''), COALESCE(updated_at, ''),
+		       ingest_ms, upload_ms
 		FROM files
 		WHERE updated_at > ?
 		ORDER BY updated_at ASC
@@ -177,10 +200,17 @@ func (d *DB) GetFilesChangedSince(watermark string, limit int) ([]FileChange, er
 	var changes []FileChange
 	for rows.Next() {
 		var c FileChange
+		var ingestMs, uploadMs sql.NullInt64
 		if err := rows.Scan(&c.Checksum, &c.Filename, &c.SizeBytes, &c.State,
 			&c.UploadAttempts, &c.ErrorMessage, &c.DiscoveredAt,
-			&c.UploadedAt, &c.UpdatedAt); err != nil {
+			&c.UploadedAt, &c.UpdatedAt, &ingestMs, &uploadMs); err != nil {
 			continue
+		}
+		if ingestMs.Valid {
+			c.IngestMs = &ingestMs.Int64
+		}
+		if uploadMs.Valid {
+			c.UploadMs = &uploadMs.Int64
 		}
 		changes = append(changes, c)
 	}

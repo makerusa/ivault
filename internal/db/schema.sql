@@ -30,6 +30,10 @@ CREATE TABLE IF NOT EXISTS files (
     destination_id  INTEGER,
     remote_path     TEXT,
     error_message   TEXT,
+    -- Transfer timing (milliseconds): local ingest copy (external drive ->
+    -- upload_queue) and the rclone upload out. NULL until the step completes.
+    ingest_ms       INTEGER,
+    upload_ms       INTEGER,
     -- Millisecond-precision change marker, bumped on every state change. Drives
     -- the delta sync to the portal (send files with updated_at > watermark).
     updated_at      TEXT DEFAULT (strftime('%Y-%m-%d %H:%M:%f','now'))

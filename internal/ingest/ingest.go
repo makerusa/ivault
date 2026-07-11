@@ -109,7 +109,45 @@ type IngestResult struct {
 	FilesFound  int
 	FilesCopied int
 	BytesCopied int64
-	Skipped     int
+	Skipped     int // already-seen (deduped by checksum)
+
+	// Filtered counts, for the per-cycle summary.
+	SkippedSystem    int // hidden/OS-metadata files (when skip-system is on)
+	SkippedTooSmall  int // below the configured minimum size
+	SkippedExtension int // extension not in the allow-list
+}
+
+// ingestFilters is the effective, portal-configured file filter for a cycle.
+// Defaults (used when nothing has been synced yet) allow everything except
+// system files.
+type ingestFilters struct {
+	skipSystemFiles bool
+	allowedExts     map[string]bool // lowercased, no leading dot; empty = allow all
+	minSizeBytes    int64
+}
+
+// loadFilters reads the filter settings the heartbeat persisted into the config
+// table. Missing/invalid values fall back to permissive defaults.
+func loadFilters(database *db.DB) ingestFilters {
+	f := ingestFilters{skipSystemFiles: true}
+	if v, err := database.GetConfig("filter_skip_system_files"); err == nil && v != "" {
+		f.skipSystemFiles = v != "false" && v != "0"
+	}
+	if v, err := database.GetConfig("filter_skip_files_under_mb"); err == nil && v != "" {
+		if mb, e := strconv.ParseFloat(v, 64); e == nil && mb > 0 {
+			f.minSizeBytes = int64(mb * 1024 * 1024)
+		}
+	}
+	if v, err := database.GetConfig("filter_allowed_extensions"); err == nil && v != "" {
+		f.allowedExts = map[string]bool{}
+		for _, e := range strings.Split(v, ",") {
+			e = strings.ToLower(strings.TrimPrefix(strings.TrimSpace(e), "."))
+			if e != "" {
+				f.allowedExts[e] = true
+			}
+		}
+	}
+	return f
 }
 
 func Run(cfg IngestConfig, database *db.DB, sessionID int64) (*IngestResult, bool, error) {
@@ -131,6 +169,8 @@ func Run(cfg IngestConfig, database *db.DB, sessionID int64) (*IngestResult, boo
 		_ = database.SetConfig("ext_drive_measured_at", time.Now().UTC().Format(time.RFC3339))
 	}
 
+	filters := loadFilters(database)
+
 	err = filepath.WalkDir(cfg.MountPoint, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -147,17 +187,40 @@ func Run(cfg IngestConfig, database *db.DB, sessionID int64) (*IngestResult, boo
 			return fmt.Errorf("failed to get relative path for %s: %w", path, err)
 		}
 
-		// Skip system files, metadata, and hidden directories
-		if isSystemFileOrInHiddenFolder(relPath) {
+		// Always drop our own provisioning sentinels — they're consumed
+		// separately and must never be uploaded, regardless of any toggle.
+		if isProvisionFile(relPath) {
 			return nil
 		}
 
-		result.FilesFound++
+		// Skip system files / OS metadata / hidden dirs — gated by the
+		// portal's "skip system files" toggle (default on).
+		if filters.skipSystemFiles && isSystemFileOrInHiddenFolder(relPath) {
+			result.SkippedSystem++
+			return nil
+		}
 
 		info, err := d.Info()
 		if err != nil {
 			return nil // Skip on stat error
 		}
+
+		// Minimum-size filter.
+		if filters.minSizeBytes > 0 && info.Size() < filters.minSizeBytes {
+			result.SkippedTooSmall++
+			return nil
+		}
+
+		// Allowed-extensions filter (empty allow-list = allow all).
+		if len(filters.allowedExts) > 0 {
+			ext := strings.ToLower(strings.TrimPrefix(filepath.Ext(relPath), "."))
+			if !filters.allowedExts[ext] {
+				result.SkippedExtension++
+				return nil
+			}
+		}
+
+		result.FilesFound++
 
 		// Compute source checksum
 		checksum, err := checksumFile(path)
@@ -193,19 +256,27 @@ func Run(cfg IngestConfig, database *db.DB, sessionID int64) (*IngestResult, boo
 			return fmt.Errorf("failed to create upload queue directories: %w", err)
 		}
 
+		copyStart := time.Now()
 		if err := copyAndVerify(path, dst, checksum); err != nil {
 			return fmt.Errorf("copy %s: %w", relPath, err)
 		}
+		ingestMs := time.Since(copyStart).Milliseconds()
 
-		// Mark as copied + queued
+		// Mark as copied + queued, and record how long the local copy took.
 		database.UpdateFileState(fileID, db.FileCopied)
 		database.UpdateFileState(fileID, db.FileQueued)
+		_ = database.SetFileIngestMs(fileID, ingestMs)
 
 		result.FilesCopied++
 		result.BytesCopied += info.Size()
 
 		return nil
 	})
+
+	if n := result.SkippedSystem + result.SkippedTooSmall + result.SkippedExtension; n > 0 {
+		log.Printf("ingest: filtered %d files (system=%d, under-size=%d, disallowed-ext=%d)",
+			n, result.SkippedSystem, result.SkippedTooSmall, result.SkippedExtension)
+	}
 
 	if err != nil {
 		return result, provisioned, err
@@ -279,6 +350,15 @@ func isSystemFileOrInHiddenFolder(relPath string) bool {
 		if strings.HasPrefix(part, ".") || strings.HasPrefix(part, "._") {
 			return true
 		}
+	}
+	return false
+}
+
+// isProvisionFile reports whether relPath is one of our provisioning sentinels.
+// These are consumed during provisioning and must never be ingested/uploaded,
+// independent of the user-configurable "skip system files" toggle.
+func isProvisionFile(relPath string) bool {
+	for _, part := range strings.Split(relPath, string(filepath.Separator)) {
 		if part == "ivault.provision" || part == "ivault-provision.json" {
 			return true
 		}
