@@ -293,14 +293,16 @@ func runMaintenance(
 			log.Println("failed to start session:", err)
 		}
 
-		// Eject (makes host see "empty drive")
+		// Eject the MEDIA only — clear the mass-storage backing file so the host
+		// sees an empty reader, while the USB gadget stays bound to the controller.
+		// We deliberately do NOT unbind the UDC here (issue #7): on the RK3576 the
+		// unbind→rebind cycle races the dwc3 controller and intermittently crashes
+		// the board, and the unbind is frequently a no-op anyway. The LUN is
+		// removable, so a media-change (eject → reload) is enough for the host to
+		// drop and re-read the volume without a USB re-enumeration.
 		sm.Transition(state.StateDisconnecting)
 		if reattachAfter {
-			log.Println("manually triggered maintenance — soft-disconnecting UDC")
-			if err := gadget.SetUDC(""); err != nil {
-				log.Println("soft-disconnect UDC error:", err)
-			}
-			time.Sleep(500 * time.Millisecond) // brief UDC settle time
+			log.Println("maintenance — ejecting media (gadget stays attached)")
 		}
 		if err := gadget.Eject(); err != nil {
 			log.Println("eject error:", err)
@@ -314,8 +316,7 @@ func runMaintenance(
 			log.Println("mount error:", err)
 			database.Log("error", "ingest", err.Error())
 			if reattachAfter {
-				gadget.Load(cfg.ImagePath)
-				gadget.SetUDC(cfg.UDCName)
+				gadget.Load(cfg.ImagePath) // re-present media; UDC stays bound
 			}
 			database.EndSession(sessionID, 0, 0, 0, "error")
 			if reattachAfter {
@@ -387,6 +388,9 @@ func runMaintenance(
 
 		if reattachAfter {
 			sm.Transition(state.StateConnecting)
+			// Re-present the media by re-setting the backing file. The UDC was
+			// never unbound (issue #7), so there is no rebind to do — reloading
+			// the backing file is what the host sees as "media inserted".
 			if err := gadget.Load(cfg.ImagePath); err != nil {
 				log.Println("load error:", err)
 				database.EndSession(sessionID, result.FilesFound, result.FilesCopied, result.BytesCopied, "error")
@@ -394,11 +398,7 @@ func runMaintenance(
 				uploadCancel()
 				return
 			}
-			log.Println("re-enabling UDC to soft-connect")
-			if err := gadget.SetUDC(cfg.UDCName); err != nil {
-				log.Println("enable UDC error:", err)
-			}
-			log.Println("gadget reloaded — device connected again")
+			log.Println("media re-inserted — drive available to host again")
 		} else {
 			sm.Transition(state.StateDisconnected)
 			log.Println("sync complete — waiting for host to plug back in")
