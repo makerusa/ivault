@@ -74,9 +74,13 @@ func (d *Discovery) scanMDNS(ctx context.Context) {
 		return
 	}
 
+	// Snapshot our own addresses so we can drop the appliance's own SMB share
+	// from the results (see localSelfAddrs).
+	self := localSelfAddrs()
+
 	// We look for SMB and NFS services
 	services := []string{"_smb._tcp", "_nfs._tcp", "_device-info._tcp"}
-	
+
 	for _, svc := range services {
 		entries := make(chan *zeroconf.ServiceEntry)
 		go func() {
@@ -95,7 +99,7 @@ func (d *Discovery) scanMDNS(ctx context.Context) {
 				if entry == nil {
 					break loop
 				}
-				d.processEntry(entry, svc)
+				d.processEntry(entry, svc, self)
 			case <-timeout:
 				break loop
 			case <-ctx.Done():
@@ -105,10 +109,47 @@ func (d *Discovery) scanMDNS(ctx context.Context) {
 	}
 }
 
-func (d *Discovery) processEntry(entry *zeroconf.ServiceEntry, svc string) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
+// localSelfAddrs snapshots every IP bound to this host (all interfaces, IPv4
+// and IPv6, including link-local), normalized to net.IP string form. Discovery
+// uses it to filter the appliance's OWN advertised shares out of results: the
+// installer runs a Samba share on the device itself, so without this the device
+// discovers and reports its own share as a candidate destination.
+func localSelfAddrs() map[string]bool {
+	set := make(map[string]bool)
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return set
+	}
+	for _, a := range addrs {
+		var ip net.IP
+		switch v := a.(type) {
+		case *net.IPNet:
+			ip = v.IP
+		case *net.IPAddr:
+			ip = v.IP
+		}
+		if ip != nil {
+			set[ip.String()] = true
+		}
+	}
+	return set
+}
 
+// isSelfAddr reports whether ipStr is loopback or one of this host's own IPs.
+// Both the set and the query are normalized via net.IP.String so IPv4 and the
+// many textual forms of an IPv6 address compare correctly.
+func isSelfAddr(self map[string]bool, ipStr string) bool {
+	ip := net.ParseIP(ipStr)
+	if ip == nil {
+		return false
+	}
+	if ip.IsLoopback() {
+		return true
+	}
+	return self[ip.String()]
+}
+
+func (d *Discovery) processEntry(entry *zeroconf.ServiceEntry, svc string, self map[string]bool) {
 	ip := ""
 	if len(entry.AddrIPv4) > 0 {
 		ip = entry.AddrIPv4[0].String()
@@ -119,6 +160,14 @@ func (d *Discovery) processEntry(entry *zeroconf.ServiceEntry, svc string) {
 	if ip == "" {
 		return
 	}
+
+	// Never report our own share.
+	if isSelfAddr(self, ip) {
+		return
+	}
+
+	d.mu.Lock()
+	defer d.mu.Unlock()
 
 	dev, ok := d.devices[ip]
 	if !ok {
@@ -166,16 +215,17 @@ func (d *Discovery) TriggerDeepScan(ctx context.Context) {
 		return
 	}
 
+	self := localSelfAddrs()
 	for _, addr := range addrs {
 		if ipnet, ok := addr.(*net.IPNet); ok && !ipnet.IP.IsLoopback() {
 			if ipnet.IP.To4() != nil {
-				go d.scanSubnet(ctx, ipnet)
+				go d.scanSubnet(ctx, ipnet, self)
 			}
 		}
 	}
 }
 
-func (d *Discovery) scanSubnet(ctx context.Context, ipnet *net.IPNet) {
+func (d *Discovery) scanSubnet(ctx context.Context, ipnet *net.IPNet, self map[string]bool) {
 	// Simple scanner for Port 445 (SMB)
 	baseIP := ipnet.IP.Mask(ipnet.Mask)
 	
@@ -195,7 +245,12 @@ func (d *Discovery) scanSubnet(ctx context.Context, ipnet *net.IPNet) {
 		wg.Add(1)
 		go func(ip string) {
 			defer wg.Done()
-			
+
+			// Never scan/report our own address.
+			if isSelfAddr(self, ip) {
+				return
+			}
+
 			// Check SMB port
 			conn, err := net.DialTimeout("tcp", net.JoinHostPort(ip, "445"), 1*time.Second)
 			if err == nil {
