@@ -157,17 +157,25 @@ func CollectStats(nvmePath string, imagePath string, mountPoint string, uploadQu
 		}
 	}
 
-	// 9. Queue
-	if files, err := os.ReadDir(uploadQueue); err == nil {
-		s.QueueFileCount = len(files)
-		var totalSize int64
-		for _, f := range files {
-			if info, err := f.Info(); err == nil {
-				totalSize += info.Size()
-			}
+	// 9. Queue — count actual files recursively. The upload queue preserves the
+	// source folder structure, and an uploaded file is removed without pruning
+	// its now-empty parent directory, so counting top-level entries with ReadDir
+	// over-reports: empty leftover directories show up as "files" (e.g. "2 files
+	// in queue · 0 MB" when the queue is really empty).
+	var queueFiles int
+	var queueBytes int64
+	_ = filepath.WalkDir(uploadQueue, func(_ string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
 		}
-		s.QueueSizeGb = float64(totalSize) / (1024 * 1024 * 1024)
-	}
+		queueFiles++
+		if info, e := d.Info(); e == nil {
+			queueBytes += info.Size()
+		}
+		return nil
+	})
+	s.QueueFileCount = queueFiles
+	s.QueueSizeGb = float64(queueBytes) / (1024 * 1024 * 1024)
 
 	return s, nil
 }
