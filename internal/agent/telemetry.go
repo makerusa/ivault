@@ -63,6 +63,13 @@ type Stats struct {
 	// Last successful sync (data reached the cloud), reported for the portal.
 	LastSyncAt          string `json:"lastSyncAt,omitempty"`
 	LastSyncDestination string `json:"lastSyncDestination,omitempty"`
+
+	// Clock health — scheduled syncs depend on a correct wall-clock, so the
+	// portal surfaces this as a per-device badge. Pointers stay nil (portal
+	// keeps prior values) when timedatectl is unavailable.
+	ClockSynchronized *bool  `json:"clockSynchronized,omitempty"` // NTP has disciplined the clock
+	NtpActive         *bool  `json:"ntpActive,omitempty"`         // an NTP client is running
+	Timezone          string `json:"timezone,omitempty"`          // device's effective IANA tz
 }
 
 func CollectStats(nvmePath string, imagePath string, mountPoint string, uploadQueue string) (Stats, error) {
@@ -177,7 +184,40 @@ func CollectStats(nvmePath string, imagePath string, mountPoint string, uploadQu
 	s.QueueFileCount = queueFiles
 	s.QueueSizeGb = float64(queueBytes) / (1024 * 1024 * 1024)
 
+	// 10. Clock health (NTP) + effective timezone.
+	if ntp, synced, tz, ok := getClockStatus(); ok {
+		s.NtpActive = &ntp
+		s.ClockSynchronized = &synced
+		s.Timezone = tz
+	}
+
 	return s, nil
+}
+
+// getClockStatus reads NTP state and the effective timezone via timedatectl.
+// `timedatectl show` prints stable KEY=VALUE lines, so we don't depend on the
+// human-readable layout. ok is false when timedatectl is unavailable.
+func getClockStatus() (ntpActive, synchronized bool, timezone string, ok bool) {
+	out, err := exec.Command("timedatectl", "show",
+		"-p", "NTP", "-p", "NTPSynchronized", "-p", "Timezone").Output()
+	if err != nil {
+		return false, false, "", false
+	}
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		k, v, found := strings.Cut(strings.TrimSpace(line), "=")
+		if !found {
+			continue
+		}
+		switch k {
+		case "NTP":
+			ntpActive = v == "yes"
+		case "NTPSynchronized":
+			synchronized = v == "yes"
+		case "Timezone":
+			timezone = v
+		}
+	}
+	return ntpActive, synchronized, timezone, true
 }
 
 // getCPUUsage samples /proc/stat twice over a short interval and returns busy
