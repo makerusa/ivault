@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -47,6 +48,20 @@ func (c *cancelHolder) call() {
 	}
 }
 
+// uploadDeviceFolder is the per-device folder used at the destination so
+// multiple devices don't write into one shared folder. Prefers the friendly
+// device name, falls back to the device id, and strips path separators so it
+// stays a single folder segment.
+func uploadDeviceFolder(cfg *config.Config) string {
+	name := strings.TrimSpace(cfg.DeviceName)
+	if name == "" {
+		name = cfg.DeviceID
+	}
+	name = strings.ReplaceAll(name, "/", "-")
+	name = strings.ReplaceAll(name, "\\", "-")
+	return strings.TrimSpace(name)
+}
+
 func main() {
 	cfgPath := flag.String("config", "/etc/ivault/config.json", "path to JSON config file")
 	flag.Parse()
@@ -63,8 +78,9 @@ func main() {
 		ConfigPath:  *cfgPath,
 	}
 	uploadCfg := upload.UploadConfig{
-		UploadQueue: cfg.UploadQueue,
-		Workers:     cfg.UploadWorkers,
+		UploadQueue:  cfg.UploadQueue,
+		Workers:      cfg.UploadWorkers,
+		DeviceFolder: uploadDeviceFolder(cfg),
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())

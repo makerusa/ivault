@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -28,6 +29,10 @@ type UploadConfig struct {
 	UploadQueue  string // local directory of staged files, e.g. /nvme/upload_queue
 	Destinations []Destination
 	Workers      int    // number of concurrent uploads (default: 2)
+	// DeviceFolder, when set, is prepended to every remote path so each device
+	// writes into its own folder at the destination (avoids two devices sharing
+	// the same folder). Typically the device name, falling back to its id.
+	DeviceFolder string
 }
 
 type Destination struct {
@@ -85,11 +90,21 @@ func UploadAll(ctx context.Context, database *db.DB, cfg UploadConfig) ([]string
 	}
 	target := cfg.Destinations[0]
 
+	// remoteRel prepends the per-device folder (if any) so each device's files
+	// land in their own folder at the destination.
+	remoteRel := func(name string) string {
+		rel := filepath.ToSlash(name)
+		if cfg.DeviceFolder != "" {
+			return cfg.DeviceFolder + "/" + rel
+		}
+		return rel
+	}
+
 	// Extract unique parent directories of queued files to pre-create sequentially.
 	// This avoids duplicate folder creation race conditions on target systems (like Google Drive).
 	uniqueDirs := make(map[string]bool)
 	for _, f := range files {
-		dir := filepath.ToSlash(filepath.Dir(f.Filename))
+		dir := filepath.ToSlash(filepath.Dir(remoteRel(f.Filename)))
 		if dir != "." && dir != "/" && dir != "" {
 			uniqueDirs[dir] = true
 		}
@@ -132,13 +147,14 @@ func UploadAll(ctx context.Context, database *db.DB, cfg UploadConfig) ([]string
 
 			log.Printf("agent: targeting destination '%s' (%s) type=%s", target.Name, target.Host, target.Type)
 
+			rel := remoteRel(f.Filename)
 			var dst string
 			if target.Type == "google_drive" {
-				dst = fmt.Sprintf("%s:%s", remoteName, f.Filename)
+				dst = fmt.Sprintf("%s:%s", remoteName, rel)
 			} else if target.Type == "smb" {
-				dst = fmt.Sprintf("%s:%s/%s", remoteName, target.Share, filepath.Join(target.Subfolder, f.Filename))
+				dst = fmt.Sprintf("%s:%s/%s", remoteName, target.Share, path.Join(target.Subfolder, rel))
 			} else {
-				dst = fmt.Sprintf("%s:%s/%s", remoteName, target.Subfolder, f.Filename)
+				dst = fmt.Sprintf("%s:%s/%s", remoteName, target.Subfolder, rel)
 			}
 			log.Printf("agent: rclone destination path: %s", dst)
 

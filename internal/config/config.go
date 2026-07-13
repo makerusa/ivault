@@ -12,6 +12,7 @@ type Config struct {
 	// Identity & API
 	UserID        string `json:"user_id"`
 	DeviceID      string `json:"device_id"`
+	DeviceName    string `json:"device_name"` // friendly name; used as the per-device upload folder
 	DeviceAPIKey  string `json:"device_api_key"`
 	CloudEndpoint string `json:"cloud_endpoint"`
 
@@ -119,6 +120,9 @@ func UpdateConfig(path string, updates Config) error {
 	}
 	if updates.DeviceID != "" {
 		cfg.DeviceID = updates.DeviceID
+	}
+	if updates.DeviceName != "" {
+		cfg.DeviceName = updates.DeviceName
 	}
 	if updates.DeviceAPIKey != "" {
 		cfg.DeviceAPIKey = updates.DeviceAPIKey

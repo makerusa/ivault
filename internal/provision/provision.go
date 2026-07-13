@@ -97,6 +97,7 @@ func Process(mountPoint string, cfgPath string) (bool, error) {
 	updates := config.Config{
 		UserID:        pf.UserID,
 		DeviceID:      pf.DeviceID,
+		DeviceName:    pf.DeviceName,
 		DeviceAPIKey:  apiKey,
 		CloudEndpoint: pf.CloudEndpoint,
 	}
