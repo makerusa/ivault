@@ -70,26 +70,29 @@ func (d Destination) LogDetails(prefix string) {
 		prefix, d.Password != "", MaskSecret(d.Password), d.ClientID != "", MaskSecret(d.ClientID), d.ClientSecret != "", MaskSecret(d.ClientSecret))
 }
 
-// UploadAll uploads all queued files using a bounded worker pool and returns
-// the names of successfully uploaded files.
-// If the context is cancelled, in-flight uploads are interrupted and their
-// files are returned to the "queued" state for retry on the next cycle.
-func UploadAll(ctx context.Context, database *db.DB, cfg UploadConfig) ([]string, error) {
+// UploadAll uploads every queued file to the highest-priority destination that
+// accepts it. Destinations arrive in priority order (the portal delivers the
+// primary first, then fallbacks); each file is tried against them in that order
+// and the first success wins. A destination that fails is remembered for the
+// rest of the cycle and skipped as a fallback, so a down/misconfigured primary
+// (e.g. an offline NAS) doesn't stall every file — its files roll over to the
+// fallback instead. Returns the uploaded filenames and the ids of the
+// destinations that actually received at least one backup.
+func UploadAll(ctx context.Context, database *db.DB, cfg UploadConfig) ([]string, []string, error) {
 	files, err := database.GetQueuedFiles()
 	if err != nil {
-		return nil, fmt.Errorf("get queued files: %w", err)
+		return nil, nil, fmt.Errorf("get queued files: %w", err)
 	}
 	log.Printf("agent: upload engine found %d files in the database queue", len(files))
 
 	if len(files) == 0 {
-		return nil, nil
+		return nil, nil, nil
+	}
+	if len(cfg.Destinations) == 0 {
+		return nil, nil, fmt.Errorf("no active destinations configured")
 	}
 
-	// Validate destinations up front before pre-creating directories.
-	if len(cfg.Destinations) == 0 {
-		return nil, fmt.Errorf("no active destinations configured")
-	}
-	target := cfg.Destinations[0]
+	remoteName := "REMOTE"
 
 	// remoteRel prepends the per-device folder (if any) so each device's files
 	// land in their own folder at the destination.
@@ -100,24 +103,53 @@ func UploadAll(ctx context.Context, database *db.DB, cfg UploadConfig) ([]string
 		}
 		return rel
 	}
+	// remoteDst builds the rclone destination path for a given target + file.
+	remoteDst := func(target Destination, rel string) string {
+		switch target.Type {
+		case "google_drive":
+			return fmt.Sprintf("%s:%s", remoteName, rel)
+		case "smb":
+			return fmt.Sprintf("%s:%s/%s", remoteName, target.Share, path.Join(target.Subfolder, rel))
+		default:
+			return fmt.Sprintf("%s:%s/%s", remoteName, target.Subfolder, rel)
+		}
+	}
 
-	// Extract unique parent directories of queued files to pre-create sequentially.
-	// This avoids duplicate folder creation race conditions on target systems (like Google Drive).
-	uniqueDirs := make(map[string]bool)
+	// Unique parent directories of the queued files, pre-created per destination
+	// before its first upload to avoid duplicate-folder races (notably on
+	// Google Drive) when workers run concurrently.
+	uniqueDirs := make([]string, 0)
+	seenDir := map[string]bool{}
 	for _, f := range files {
 		dir := filepath.ToSlash(filepath.Dir(remoteRel(f.Filename)))
-		if dir != "." && dir != "/" && dir != "" {
-			uniqueDirs[dir] = true
+		if dir != "." && dir != "/" && dir != "" && !seenDir[dir] {
+			seenDir[dir] = true
+			uniqueDirs = append(uniqueDirs, dir)
+		}
+	}
+	var prepMu sync.Mutex
+	prepped := map[string]bool{}
+	prepDest := func(target Destination) {
+		prepMu.Lock()
+		defer prepMu.Unlock()
+		if prepped[target.ID] {
+			return
+		}
+		prepped[target.ID] = true
+		for _, dir := range uniqueDirs {
+			if err := createRemoteDir(ctx, dir, target, remoteName); err != nil {
+				log.Printf("agent: warning: failed to pre-create %s:%s: %v", remoteName, dir, err)
+			}
 		}
 	}
 
-	remoteName := "REMOTE"
-	for dir := range uniqueDirs {
-		log.Printf("agent: pre-creating remote directory: %s:%s", remoteName, dir)
-		if err := createRemoteDir(ctx, dir, target, remoteName); err != nil {
-			log.Printf("agent: warning: failed to pre-create remote directory %s:%s: %v", remoteName, dir, err)
-		}
-	}
+	// deadDest marks destinations that have already failed this cycle so a
+	// broken/offline one isn't retried for every remaining file. rclone has
+	// already applied its own per-file retries before returning an error, so a
+	// failure here is treated as a destination-level problem for this cycle;
+	// it's retried fresh next cycle.
+	var deadMu sync.Mutex
+	deadDest := map[string]bool{}
 
 	workers := cfg.Workers
 	if workers <= 0 {
@@ -125,8 +157,9 @@ func UploadAll(ctx context.Context, database *db.DB, cfg UploadConfig) ([]string
 	}
 
 	var (
-		mu       sync.Mutex
-		uploaded []string
+		mu        sync.Mutex
+		uploaded  []string
+		usedDests = map[string]bool{}
 	)
 
 	g, gctx := errgroup.WithContext(ctx)
@@ -140,40 +173,63 @@ func UploadAll(ctx context.Context, database *db.DB, cfg UploadConfig) ([]string
 			defer func() { <-sem }() // release slot
 
 			src := filepath.Join(cfg.UploadQueue, f.Filename)
-
 			if _, err := os.Stat(src); os.IsNotExist(err) {
 				database.UpdateFileState(f.ID, db.FileAbandoned)
 				return nil
 			}
 
-			log.Printf("agent: targeting destination '%s' (%s) type=%s", target.Name, target.Host, target.Type)
-
 			rel := remoteRel(f.Filename)
-			var dst string
-			if target.Type == "google_drive" {
-				dst = fmt.Sprintf("%s:%s", remoteName, rel)
-			} else if target.Type == "smb" {
-				dst = fmt.Sprintf("%s:%s/%s", remoteName, target.Share, path.Join(target.Subfolder, rel))
-			} else {
-				dst = fmt.Sprintf("%s:%s/%s", remoteName, target.Subfolder, rel)
-			}
-			log.Printf("agent: rclone destination path: %s", dst)
-
 			database.UpdateFileState(f.ID, db.FileUploading)
 
-			uploadStart := time.Now()
-			if err := uploadFile(gctx, src, dst, target, remoteName); err != nil {
-				log.Printf("agent: upload FAILED for %s to %s: %v", f.Filename, dst, err)
-				if gctx.Err() != nil {
-					// Cancelled — return to queued for retry next cycle
-					database.UpdateFileState(f.ID, db.FileQueued)
-					return fmt.Errorf("upload cancelled")
+			var (
+				lastErr    error
+				uploadedTo *Destination
+				uploadMs   int64
+			)
+			for i := range cfg.Destinations {
+				target := cfg.Destinations[i]
+				deadMu.Lock()
+				dead := deadDest[target.ID]
+				deadMu.Unlock()
+				if dead {
+					continue
 				}
-				// Genuine failure — record the error (increments upload_attempts)
-				// and continue with the remaining files.
-				database.UpdateFileError(f.ID, err.Error())
-				// Abandon after too many attempts so a permanently failing file
-				// doesn't re-upload every maintenance cycle forever.
+
+				prepDest(target)
+				dst := remoteDst(target, rel)
+				role := "primary"
+				if i > 0 {
+					role = "fallback"
+				}
+				log.Printf("agent: uploading %s to %s destination '%s' (%s): %s", f.Filename, role, target.Name, target.Type, dst)
+
+				start := time.Now()
+				if err := uploadFile(gctx, src, dst, target, remoteName); err != nil {
+					if gctx.Err() != nil {
+						// Cancelled — return to queued for retry next cycle.
+						database.UpdateFileState(f.ID, db.FileQueued)
+						return fmt.Errorf("upload cancelled")
+					}
+					log.Printf("agent: upload FAILED for %s to '%s': %v", f.Filename, target.Name, err)
+					lastErr = err
+					deadMu.Lock()
+					deadDest[target.ID] = true
+					deadMu.Unlock()
+					continue // try the next (fallback) destination
+				}
+				uploadMs = time.Since(start).Milliseconds()
+				t := target
+				uploadedTo = &t
+				break
+			}
+
+			if uploadedTo == nil {
+				// Every destination failed for this file this cycle.
+				msg := "no reachable destination"
+				if lastErr != nil {
+					msg = lastErr.Error()
+				}
+				database.UpdateFileError(f.ID, msg)
 				if f.UploadAttempts+1 >= maxUploadAttempts {
 					log.Printf("agent: giving up on %s after %d attempts — marking abandoned", f.Filename, f.UploadAttempts+1)
 					database.UpdateFileState(f.ID, db.FileAbandoned)
@@ -183,25 +239,26 @@ func UploadAll(ctx context.Context, database *db.DB, cfg UploadConfig) ([]string
 				return nil
 			}
 
-			uploadMs := time.Since(uploadStart).Milliseconds()
-			database.UpdateFileUploaded(f.ID, 0, dst) // TODO: Handle numeric/string ID conversion
+			database.UpdateFileUploaded(f.ID, 0, remoteDst(*uploadedTo, rel))
 			_ = database.SetFileUploadMs(f.ID, uploadMs)
 			os.Remove(src)
 
 			mu.Lock()
 			uploaded = append(uploaded, f.Filename)
+			usedDests[uploadedTo.ID] = true
 			mu.Unlock()
-
 			return nil
 		})
 	}
 
 	// Wait for all workers. errgroup cancels gctx on the first non-nil error,
 	// which causes remaining rclone processes to receive SIGKILL via CommandContext.
-	if err := g.Wait(); err != nil {
-		return uploaded, err
+	err = g.Wait()
+	used := make([]string, 0, len(usedDests))
+	for id := range usedDests {
+		used = append(used, id)
 	}
-	return uploaded, nil
+	return uploaded, used, err
 }
 
 // TestReachable checks whether a destination is currently reachable, in a way

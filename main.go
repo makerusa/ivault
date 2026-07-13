@@ -460,7 +460,7 @@ func runMaintenance(
 				}
 				uploadCfg.Destinations = dests
 
-				uploaded, err := upload.UploadAll(uploadCtx, database, uploadCfg)
+				uploaded, usedDestIDs, err := upload.UploadAll(uploadCtx, database, uploadCfg)
 				if err != nil {
 					log.Println("upload error:", err)
 					database.Log("error", "upload", err.Error())
@@ -468,20 +468,29 @@ func runMaintenance(
 				}
 				log.Printf("uploaded %d files", len(uploaded))
 				database.Log("info", "upload", fmt.Sprintf("uploaded %d files", len(uploaded)))
-				// Record last successful sync (data reached the cloud) for the
+				// Record last successful sync (data reached a destination) for the
 				// portal's "Last sync" — reported via the next heartbeat.
 				if len(uploaded) > 0 {
 					_ = database.SetConfig("last_sync_at", time.Now().UTC().Format(time.RFC3339))
-					if len(dests) > 0 {
-						name := dests[0].Name
-						if name == "" {
-							name = dests[0].Type
-						}
-						_ = database.SetConfig("last_sync_destination", name)
+					usedSet := map[string]bool{}
+					for _, id := range usedDestIDs {
+						usedSet[id] = true
 						// Tell the portal this destination just took a real backup
 						// so its status reflects reality (reachable + last backup),
 						// not just whether a manual test was ever run.
-						agent.ReportUploadSuccess(cfg, dests[0].ID)
+						agent.ReportUploadSuccess(cfg, id)
+					}
+					// Label "last sync" with the highest-priority destination that
+					// actually took a backup (dests is in priority order).
+					for _, d := range dests {
+						if usedSet[d.ID] {
+							name := d.Name
+							if name == "" {
+								name = d.Type
+							}
+							_ = database.SetConfig("last_sync_destination", name)
+							break
+						}
 					}
 				}
 				log.Println("--- maintenance cycle complete ---")
