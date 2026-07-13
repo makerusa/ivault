@@ -478,6 +478,10 @@ func runMaintenance(
 							name = dests[0].Type
 						}
 						_ = database.SetConfig("last_sync_destination", name)
+						// Tell the portal this destination just took a real backup
+						// so its status reflects reality (reachable + last backup),
+						// not just whether a manual test was ever run.
+						agent.ReportUploadSuccess(cfg, dests[0].ID)
 					}
 				}
 				log.Println("--- maintenance cycle complete ---")

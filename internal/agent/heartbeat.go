@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -182,8 +181,10 @@ func applyTimezone(database *db.DB, tz string) {
 }
 
 // activeDestSummary is a secret-free view of a destination the device is using,
-// reported to the portal so the UI reflects what's actually configured.
+// reported to the portal so the UI can match it to the configured destination
+// (by stable id) and show that it's been delivered to the device.
 type activeDestSummary struct {
+	ID   string `json:"id"`
 	Name string `json:"name"`
 	Type string `json:"type"`
 }
@@ -255,11 +256,12 @@ func sendHeartbeat(cfg *config.Config, sm *state.Machine, database *db.DB) {
 	var activeDests []activeDestSummary
 	for _, raw := range GetActiveDestinations() {
 		var d struct {
+			ID   string `json:"id"`
 			Name string `json:"name"`
 			Type string `json:"type"`
 		}
 		if json.Unmarshal(raw, &d) == nil && (d.Name != "" || d.Type != "") {
-			activeDests = append(activeDests, activeDestSummary{Name: d.Name, Type: d.Type})
+			activeDests = append(activeDests, activeDestSummary{ID: d.ID, Name: d.Name, Type: d.Type})
 		}
 	}
 
@@ -466,44 +468,47 @@ func sendHeartbeat(cfg *config.Config, sm *state.Machine, database *db.DB) {
 }
 
 func testDestination(cfg *config.Config, destID string, rawDests []json.RawMessage) {
-	var targetHost string
-	var targetPort int = 445 // Default SMB
-
-	// Find the destination in the list we just received
+	// Find the full destination (with credentials) in the set we just received.
+	var target *upload.Destination
 	for _, raw := range rawDests {
-		var d struct {
-			ID   string `json:"id"`
-			Host string `json:"host"`
-			Type string `json:"type"`
-		}
+		var d upload.Destination
 		if err := json.Unmarshal(raw, &d); err == nil && d.ID == destID {
-			targetHost = d.Host
-			if d.Type == "ftp" {
-				targetPort = 21
-			}
+			target = &d
 			break
 		}
 	}
-
-	if targetHost == "" {
-		log.Printf("agent: test failed, destination %s not found in response", destID)
+	if target == nil {
+		// The queued test references a destination that's no longer in the
+		// portal's set — typically it was removed (and re-adds mint a new id).
+		// Nothing to test; don't report a bogus failure against a dead id.
+		log.Printf("agent: test skipped — destination %s no longer in the portal set (likely removed)", destID)
 		return
 	}
 
-	start := time.Now()
-	conn, err := net.DialTimeout("tcp", fmt.Sprintf("%s:%d", targetHost, targetPort), 5*time.Second)
-	latency := time.Since(start).Milliseconds()
-
+	// Type-aware reachability: TCP dial for SMB/FTP/SFTP, a real rclone
+	// auth+list probe for cloud destinations (a socket dial is meaningless for
+	// Google Drive, which has no host).
+	latency, err := upload.TestReachable(context.Background(), *target)
 	success := err == nil
 	if success {
-		conn.Close()
-		log.Printf("agent: test destination %s (%s) SUCCESS in %dms", destID, targetHost, latency)
+		log.Printf("agent: test destination %s (%s) SUCCESS in %dms", destID, target.Type, latency)
 	} else {
-		log.Printf("agent: test destination %s (%s) FAILED: %v", destID, targetHost, err)
+		log.Printf("agent: test destination %s (%s) FAILED: %v", destID, target.Type, err)
 	}
-
-	// Report result back to portal via a separate POST
 	reportTestResult(cfg, destID, success, latency, err)
+}
+
+// ReportUploadSuccess tells the portal that a real backup just reached the
+// given destination. That's the strongest possible reachability signal, so it
+// marks the destination reachable and stamps its last-used time via the same
+// endpoint the manual test uses — this is what turns a working destination's
+// status from "Unknown" into "Reachable · Last backup <time>" without the user
+// ever running a manual test.
+func ReportUploadSuccess(cfg *config.Config, destID string) {
+	if destID == "" {
+		return
+	}
+	reportTestResult(cfg, destID, true, 0, nil)
 }
 
 func reportTestResult(cfg *config.Config, destID string, success bool, latency int64, dialErr error) {

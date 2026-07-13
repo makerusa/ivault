@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net"
 	"os"
 	"os/exec"
 	"path"
@@ -201,6 +202,54 @@ func UploadAll(ctx context.Context, database *db.DB, cfg UploadConfig) ([]string
 		return uploaded, err
 	}
 	return uploaded, nil
+}
+
+// TestReachable checks whether a destination is currently reachable, in a way
+// appropriate to its type: a TCP dial for host-based backends (SMB/SFTP/FTP)
+// and a real rclone auth+list probe for cloud backends (Google Drive), where a
+// socket dial is meaningless. Returns the probe latency (ms) and a non-nil
+// error when unreachable or when the type has no meaningful check. This is the
+// single source of truth for "can we reach this destination" and is used by
+// both the manual Test Connection and any pre-flight check.
+func TestReachable(ctx context.Context, target Destination) (int64, error) {
+	start := time.Now()
+	switch target.Type {
+	case "google_drive":
+		// Auth + reachability in one: list the app's backup folder. This
+		// succeeds only if the stored refresh token still authorizes against
+		// Drive — the only reachability signal that means anything for a cloud
+		// destination (it has no host:port to dial).
+		cctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+		defer cancel()
+		cmd := exec.CommandContext(cctx, "rclone", "lsd", "--config", "/dev/null", "REMOTE:")
+		setupRCloneEnv(cmd, target, "REMOTE", false)
+		out, err := cmd.CombinedOutput()
+		latency := time.Since(start).Milliseconds()
+		if err != nil {
+			return latency, fmt.Errorf("google drive check failed: %w (%s)", err, strings.TrimSpace(string(out)))
+		}
+		return latency, nil
+	case "smb", "sftp", "ftp":
+		if target.Host == "" {
+			return 0, fmt.Errorf("no host configured for %s destination", target.Type)
+		}
+		port := 445
+		switch target.Type {
+		case "ftp":
+			port = 21
+		case "sftp":
+			port = 22
+		}
+		conn, err := net.DialTimeout("tcp", fmt.Sprintf("%s:%d", target.Host, port), 5*time.Second)
+		latency := time.Since(start).Milliseconds()
+		if err != nil {
+			return latency, err
+		}
+		conn.Close()
+		return latency, nil
+	default:
+		return 0, fmt.Errorf("reachability test not supported for type %q", target.Type)
+	}
 }
 
 func uploadFile(ctx context.Context, src, dst string, target Destination, remoteName string) error {
