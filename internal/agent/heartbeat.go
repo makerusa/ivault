@@ -157,6 +157,13 @@ var (
 	lastDestJSON string
 )
 
+// activeDestSummary is a secret-free view of a destination the device is using,
+// reported to the portal so the UI reflects what's actually configured.
+type activeDestSummary struct {
+	Name string `json:"name"`
+	Type string `json:"type"`
+}
+
 func sendHeartbeat(cfg *config.Config, sm *state.Machine, database *db.DB) {
 	// Measure internal storage on the filesystem that actually holds it (the
 	// upload queue lives there), not a hardcoded "/nvme" — the no-NVMe fallback
@@ -218,16 +225,32 @@ func sendHeartbeat(cfg *config.Config, sm *state.Machine, database *db.DB) {
 		}
 	}
 
+	// Secret-free summary of the destinations the device is actually using, so
+	// the portal can show what's configured even when it wasn't added via the
+	// current portal session (e.g. cached from an earlier setup).
+	var activeDests []activeDestSummary
+	for _, raw := range GetActiveDestinations() {
+		var d struct {
+			Name string `json:"name"`
+			Type string `json:"type"`
+		}
+		if json.Unmarshal(raw, &d) == nil && (d.Name != "" || d.Type != "") {
+			activeDests = append(activeDests, activeDestSummary{Name: d.Name, Type: d.Type})
+		}
+	}
+
 	payload := struct {
 		Stats
-		Status            *string            `json:"status"`
-		DiscoveredDevices []DiscoveredDevice `json:"discoveredDevices"`
-		Files             []db.FileChange    `json:"files"`
+		Status             *string             `json:"status"`
+		DiscoveredDevices  []DiscoveredDevice  `json:"discoveredDevices"`
+		Files              []db.FileChange     `json:"files"`
+		ActiveDestinations []activeDestSummary `json:"activeDestinations"`
 	}{
-		Stats:             stats,
-		Status:            &currentStatus,
-		DiscoveredDevices: discovered,
-		Files:             changed,
+		Stats:              stats,
+		Status:             &currentStatus,
+		DiscoveredDevices:  discovered,
+		Files:              changed,
+		ActiveDestinations: activeDests,
 	}
 	body, _ := json.Marshal(payload)
 	url := fmt.Sprintf("%s/api/devices/%s/heartbeat", cfg.CloudEndpoint, cfg.DeviceID)
