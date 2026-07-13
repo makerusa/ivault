@@ -223,6 +223,10 @@ func sendHeartbeat(cfg *config.Config, sm *state.Machine, database *db.DB) {
 	if v, e := database.GetConfig("ext_drive_measured_at"); e == nil && v != "" {
 		stats.VirtualDriveMeasuredAt = v
 	}
+	// Real exFAT volume label, captured during the last maintenance mount.
+	if v, e := database.GetConfig("ext_drive_label"); e == nil && v != "" {
+		stats.VirtualDriveLabel = v
+	}
 	// Last successful sync (recorded on a successful upload cycle).
 	if v, e := database.GetConfig("last_sync_at"); e == nil && v != "" {
 		stats.LastSyncAt = v

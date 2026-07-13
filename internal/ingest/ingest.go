@@ -90,6 +90,22 @@ func Unmount(cfg IngestConfig) error {
 	return nil
 }
 
+// readVolumeLabel returns the filesystem label (e.g. the exFAT volume name) of
+// whatever is mounted at mountPoint, or "" if it can't be determined. Must be
+// called while the drive is mounted internally (mid-maintenance).
+func readVolumeLabel(mountPoint string) string {
+	src, err := exec.Command("findmnt", "-n", "-o", "SOURCE", mountPoint).Output()
+	source := strings.TrimSpace(string(src))
+	if err != nil || source == "" {
+		return ""
+	}
+	out, err := exec.Command("blkid", "-s", "LABEL", "-o", "value", source).Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
 // diskUsageBytes returns used and total bytes of the filesystem mounted at path.
 func diskUsageBytes(path string) (used, total uint64, err error) {
 	var st syscall.Statfs_t
@@ -178,6 +194,12 @@ func Run(cfg IngestConfig, database *db.DB, sessionID int64) (*IngestResult, boo
 		_ = database.SetConfig("ext_drive_used_bytes", strconv.FormatUint(used, 10))
 		_ = database.SetConfig("ext_drive_total_bytes", strconv.FormatUint(total, 10))
 		_ = database.SetConfig("ext_drive_measured_at", time.Now().UTC().Format(time.RFC3339))
+	}
+	// Capture the real exFAT volume label while mounted (it's the only time we
+	// can read it), so the portal can show the actual drive name instead of a
+	// stored default. Persisted and backfilled into telemetry by the heartbeat.
+	if label := readVolumeLabel(cfg.MountPoint); label != "" {
+		_ = database.SetConfig("ext_drive_label", label)
 	}
 
 	filters := loadFilters(database)
