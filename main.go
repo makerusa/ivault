@@ -50,17 +50,46 @@ func (c *cancelHolder) call() {
 }
 
 // uploadDeviceFolder is the per-device folder used at the destination so
-// multiple devices don't write into one shared folder. Prefers the friendly
-// device name, falls back to the device id, and strips path separators so it
-// stays a single folder segment.
+// multiple devices don't write into one shared folder. It's the human-friendly
+// device name plus a short suffix from the device id — e.g. "Studio Mac-5f1414"
+// — so it reads clearly but two devices with the same name can't collide. When
+// no name is set it falls back to "Relay-<shortid>" rather than a bare opaque
+// id.
 func uploadDeviceFolder(cfg *config.Config) string {
-	name := strings.TrimSpace(cfg.DeviceName)
+	name := sanitizeFolderName(cfg.DeviceName)
 	if name == "" {
-		name = cfg.DeviceID
+		name = "Relay"
 	}
-	name = strings.ReplaceAll(name, "/", "-")
-	name = strings.ReplaceAll(name, "\\", "-")
-	return strings.TrimSpace(name)
+	if id := strings.TrimSpace(cfg.DeviceID); id != "" {
+		n := 6
+		if len(id) < n {
+			n = len(id)
+		}
+		name = name + "-" + id[:n]
+	}
+	return name
+}
+
+// sanitizeFolderName keeps a folder segment human-readable and safe across the
+// SMB / Google Drive / local backends: it keeps letters, digits, space, dot,
+// dash and underscore, replaces any other run with a single dash, and trims.
+func sanitizeFolderName(s string) string {
+	var b strings.Builder
+	prevDash := false
+	for _, r := range strings.TrimSpace(s) {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9',
+			r == ' ', r == '.', r == '_', r == '-':
+			b.WriteRune(r)
+			prevDash = false
+		default:
+			if !prevDash {
+				b.WriteByte('-')
+				prevDash = true
+			}
+		}
+	}
+	return strings.Trim(strings.TrimSpace(b.String()), "-")
 }
 
 func main() {
