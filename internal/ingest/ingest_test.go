@@ -97,14 +97,15 @@ func TestLoadFilters(t *testing.T) {
 
 	// Defaults when nothing has been synced: skip-system on, no size/ext limits.
 	f := loadFilters(database)
-	if !f.skipSystemFiles || f.minSizeBytes != 0 || len(f.allowedExts) != 0 {
+	if !f.skipSystemFiles || f.minSizeBytes != 0 || f.maxSizeBytes != 0 || len(f.ignoredExts) != 0 {
 		t.Fatalf("unexpected defaults: %+v", f)
 	}
 
 	// Values persisted by the heartbeat are parsed, normalized, and enforced.
 	_ = database.SetConfig("filter_skip_system_files", "false")
 	_ = database.SetConfig("filter_skip_files_under_mb", "2")
-	_ = database.SetConfig("filter_allowed_extensions", "MP4, .mov ,wav")
+	_ = database.SetConfig("filter_skip_files_over_mb", "500")
+	_ = database.SetConfig("filter_ignored_extensions", "TMP, .log ,ds_store")
 	f = loadFilters(database)
 	if f.skipSystemFiles {
 		t.Error("skipSystemFiles should be false")
@@ -112,12 +113,15 @@ func TestLoadFilters(t *testing.T) {
 	if f.minSizeBytes != 2*1024*1024 {
 		t.Errorf("minSizeBytes = %d, want %d", f.minSizeBytes, 2*1024*1024)
 	}
-	for _, ext := range []string{"mp4", "mov", "wav"} {
-		if !f.allowedExts[ext] {
-			t.Errorf("extension %q should be allowed; got %+v", ext, f.allowedExts)
+	if f.maxSizeBytes != 500*1024*1024 {
+		t.Errorf("maxSizeBytes = %d, want %d", f.maxSizeBytes, 500*1024*1024)
+	}
+	for _, ext := range []string{"tmp", "log", "ds_store"} {
+		if !f.ignoredExts[ext] {
+			t.Errorf("extension %q should be ignored; got %+v", ext, f.ignoredExts)
 		}
 	}
-	if f.allowedExts["avi"] {
-		t.Error("extension avi should not be allowed")
+	if f.ignoredExts["mp4"] {
+		t.Error("extension mp4 should not be in the ignore list")
 	}
 }

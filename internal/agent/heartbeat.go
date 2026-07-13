@@ -335,16 +335,20 @@ func sendHeartbeat(cfg *config.Config, sm *state.Machine, database *db.DB) {
 			// the config table so the next ingest cycle enforces them.
 			var sc struct {
 				SkipSystemFiles   *bool    `json:"skipSystemFiles"`
-				AllowedExtensions []string `json:"allowedExtensions"`
+				IgnoredExtensions []string `json:"ignoredExtensions"`
 				SkipFilesUnderMb  *float64 `json:"skipFilesUnderMb"`
+				SkipFilesOverMb   *float64 `json:"skipFilesOverMb"`
 			}
 			if err := json.Unmarshal(*response.StorageConfig, &sc); err == nil {
 				if sc.SkipSystemFiles != nil {
 					_ = database.SetConfig("filter_skip_system_files", strconv.FormatBool(*sc.SkipSystemFiles))
 				}
-				_ = database.SetConfig("filter_allowed_extensions", strings.Join(sc.AllowedExtensions, ","))
+				_ = database.SetConfig("filter_ignored_extensions", strings.Join(sc.IgnoredExtensions, ","))
 				if sc.SkipFilesUnderMb != nil {
 					_ = database.SetConfig("filter_skip_files_under_mb", strconv.FormatFloat(*sc.SkipFilesUnderMb, 'f', -1, 64))
+				}
+				if sc.SkipFilesOverMb != nil {
+					_ = database.SetConfig("filter_skip_files_over_mb", strconv.FormatFloat(*sc.SkipFilesOverMb, 'f', -1, 64))
 				}
 			}
 		}

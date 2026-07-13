@@ -114,20 +114,22 @@ type IngestResult struct {
 	// Filtered counts, for the per-cycle summary.
 	SkippedSystem    int // hidden/OS-metadata files (when skip-system is on)
 	SkippedTooSmall  int // below the configured minimum size
-	SkippedExtension int // extension not in the allow-list
+	SkippedTooLarge  int // above the configured maximum size
+	SkippedExtension int // extension in the ignore blocklist
 }
 
-// ingestFilters is the effective, portal-configured file filter for a cycle.
-// Defaults (used when nothing has been synced yet) allow everything except
+// ingestFilters is the effective, portal-configured ignore rules for a cycle.
+// Defaults (used when nothing has been synced yet) ingest everything except
 // system files.
 type ingestFilters struct {
 	skipSystemFiles bool
-	allowedExts     map[string]bool // lowercased, no leading dot; empty = allow all
-	minSizeBytes    int64
+	ignoredExts     map[string]bool // lowercased, no leading dot; extensions to ignore
+	minSizeBytes    int64           // ignore files smaller than this (0 = no floor)
+	maxSizeBytes    int64           // ignore files larger than this (0 = no cap)
 }
 
-// loadFilters reads the filter settings the heartbeat persisted into the config
-// table. Missing/invalid values fall back to permissive defaults.
+// loadFilters reads the ignore-rule settings the heartbeat persisted into the
+// config table. Missing/invalid values fall back to permissive defaults.
 func loadFilters(database *db.DB) ingestFilters {
 	f := ingestFilters{skipSystemFiles: true}
 	if v, err := database.GetConfig("filter_skip_system_files"); err == nil && v != "" {
@@ -138,12 +140,17 @@ func loadFilters(database *db.DB) ingestFilters {
 			f.minSizeBytes = int64(mb * 1024 * 1024)
 		}
 	}
-	if v, err := database.GetConfig("filter_allowed_extensions"); err == nil && v != "" {
-		f.allowedExts = map[string]bool{}
+	if v, err := database.GetConfig("filter_skip_files_over_mb"); err == nil && v != "" {
+		if mb, e := strconv.ParseFloat(v, 64); e == nil && mb > 0 {
+			f.maxSizeBytes = int64(mb * 1024 * 1024)
+		}
+	}
+	if v, err := database.GetConfig("filter_ignored_extensions"); err == nil && v != "" {
+		f.ignoredExts = map[string]bool{}
 		for _, e := range strings.Split(v, ",") {
 			e = strings.ToLower(strings.TrimPrefix(strings.TrimSpace(e), "."))
 			if e != "" {
-				f.allowedExts[e] = true
+				f.ignoredExts[e] = true
 			}
 		}
 	}
@@ -205,16 +212,20 @@ func Run(cfg IngestConfig, database *db.DB, sessionID int64) (*IngestResult, boo
 			return nil // Skip on stat error
 		}
 
-		// Minimum-size filter.
+		// Size ignore rules: too small / too large.
 		if filters.minSizeBytes > 0 && info.Size() < filters.minSizeBytes {
 			result.SkippedTooSmall++
 			return nil
 		}
+		if filters.maxSizeBytes > 0 && info.Size() > filters.maxSizeBytes {
+			result.SkippedTooLarge++
+			return nil
+		}
 
-		// Allowed-extensions filter (empty allow-list = allow all).
-		if len(filters.allowedExts) > 0 {
+		// Ignored-extensions blocklist (empty = ignore nothing).
+		if len(filters.ignoredExts) > 0 {
 			ext := strings.ToLower(strings.TrimPrefix(filepath.Ext(relPath), "."))
-			if !filters.allowedExts[ext] {
+			if filters.ignoredExts[ext] {
 				result.SkippedExtension++
 				return nil
 			}
@@ -273,9 +284,9 @@ func Run(cfg IngestConfig, database *db.DB, sessionID int64) (*IngestResult, boo
 		return nil
 	})
 
-	if n := result.SkippedSystem + result.SkippedTooSmall + result.SkippedExtension; n > 0 {
-		log.Printf("ingest: filtered %d files (system=%d, under-size=%d, disallowed-ext=%d)",
-			n, result.SkippedSystem, result.SkippedTooSmall, result.SkippedExtension)
+	if n := result.SkippedSystem + result.SkippedTooSmall + result.SkippedTooLarge + result.SkippedExtension; n > 0 {
+		log.Printf("ingest: ignored %d files (system=%d, under-size=%d, over-size=%d, ignored-ext=%d)",
+			n, result.SkippedSystem, result.SkippedTooSmall, result.SkippedTooLarge, result.SkippedExtension)
 	}
 
 	if err != nil {
