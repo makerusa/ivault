@@ -688,6 +688,27 @@ exit 0
 GUARD
 chmod +x /usr/local/bin/ivault-udc-guard.sh
 
+# ==============================================================================
+# TIME SYNC (NTP)
+# ==============================================================================
+# Scheduled syncs and blackout windows fire on wall-clock time, so the device's
+# absolute clock must be correct. The timezone comes from the account (via
+# provisioning + heartbeat); NTP is the OS baseline that keeps the underlying
+# UTC clock accurate. Enable it here so it's guaranteed regardless of the image
+# default. Idempotent and best-effort — don't fail the install if unavailable.
+info "Enabling network time sync (NTP)…"
+if command -v timedatectl >/dev/null 2>&1; then
+    systemctl enable --now systemd-timesyncd >/dev/null 2>&1 || true
+    timedatectl set-ntp true >/dev/null 2>&1 || true
+    if [ "$(timedatectl show -p NTP --value 2>/dev/null)" = "yes" ]; then
+        ok "NTP enabled ($(timedatectl show -p NTPSynchronized --value 2>/dev/null | grep -q yes && echo 'clock synchronized' || echo 'awaiting first sync'))."
+    else
+        warn "Could not confirm NTP is active — verify with: timedatectl"
+    fi
+else
+    warn "timedatectl not found — ensure the OS keeps its clock NTP-synced."
+fi
+
 cat > /etc/systemd/system/ivault.service <<EOT
 [Unit]
 Description=MakerUSA Relay - Intelligent USB Storage Appliance

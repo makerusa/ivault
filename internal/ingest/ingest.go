@@ -165,7 +165,7 @@ func Run(cfg IngestConfig, database *db.DB, sessionID int64) (*IngestResult, boo
 	result := &IngestResult{}
 
 	// Run provision check
-	provisioned, err := provision.Process(cfg.MountPoint, cfg.ConfigPath)
+	provisioned, err := provision.Process(cfg.MountPoint, cfg.ConfigPath, database)
 	if err != nil {
 		return nil, false, fmt.Errorf("provisioning failed: %w", err)
 	}

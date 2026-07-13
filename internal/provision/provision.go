@@ -10,11 +10,13 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/makerusa/ivault/internal/config"
+	"github.com/makerusa/ivault/internal/db"
 )
 
 type ProvisionFile struct {
@@ -25,6 +27,7 @@ type ProvisionFile struct {
 	Token         string        `json:"token"`
 	TokenExpires  string        `json:"tokenExpires"`
 	CloudEndpoint string        `json:"cloudEndpoint"`
+	Timezone      string        `json:"timezone"` // account IANA tz; seeds the schedule zone from first boot
 	Network       NetworkConfig `json:"network"`
 }
 
@@ -39,7 +42,7 @@ func Detect(mountPoint string) bool {
 // Process checks for ivault.provision in the mount point, and if found,
 // executes the provisioning sequence. Returns (true, nil) if provisioning
 // was successful, (false, nil) if no file was found, or (false, error) on failure.
-func Process(mountPoint string, cfgPath string) (bool, error) {
+func Process(mountPoint string, cfgPath string, database *db.DB) (bool, error) {
 	provisionPath := filepath.Join(mountPoint, "ivault.provision")
 	
 	if _, err := os.Stat(provisionPath); os.IsNotExist(err) {
@@ -107,8 +110,36 @@ func Process(mountPoint string, cfgPath string) (bool, error) {
 
 	log.Println("provision: configuration saved successfully")
 
+	// Seed the schedule timezone from the account so scheduled syncs use the
+	// user's local time from first boot, before the first heartbeat arrives.
+	// The heartbeat remains the ongoing source of truth for later changes.
+	if pf.Timezone != "" {
+		applyTimezone(database, pf.Timezone)
+	}
+
 	log.Println("provision: sequence complete!")
 	return true, nil
+}
+
+// applyTimezone persists the schedule timezone into the config table (read by
+// the schedule package) and best-effort sets the system timezone so the
+// device's wall-clock matches the account. Invalid zones are ignored so a bad
+// value can't wedge provisioning.
+func applyTimezone(database *db.DB, tz string) {
+	if _, err := time.LoadLocation(tz); err != nil {
+		log.Printf("provision: ignoring invalid timezone %q: %v", tz, err)
+		return
+	}
+	if database != nil {
+		if err := database.SetConfig("sched_timezone", tz); err != nil {
+			log.Printf("provision: failed to persist timezone: %v", err)
+		}
+	}
+	if out, err := exec.Command("sudo", "timedatectl", "set-timezone", tz).CombinedOutput(); err != nil {
+		log.Printf("provision: timedatectl set-timezone %q failed: %v (%s)", tz, err, strings.TrimSpace(string(out)))
+	} else {
+		log.Printf("provision: system timezone set to %s", tz)
+	}
 }
 
 // waitForNetwork blocks until the portal endpoint's host resolves via DNS and a
