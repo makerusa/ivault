@@ -122,7 +122,7 @@ func Start(ctx context.Context, cfg *config.Config, sm *state.Machine, database 
 		defer ticker.Stop()
 
 		trigger := make(chan struct{}, 1)
-		
+
 		// Send heartbeat immediately on state transition
 		sm.OnChange(func(old, new state.State) {
 			select {
@@ -300,14 +300,33 @@ func sendHeartbeat(cfg *config.Config, sm *state.Machine, database *db.DB) {
 
 	// Check for remote commands and configuration sync
 	var response struct {
-		Commands      []string           `json:"commands"`
-		StorageConfig *json.RawMessage   `json:"storageConfig"`
-		Destinations  []json.RawMessage  `json:"destinations"`
-		LogLevel      string             `json:"logLevel"`
+		Commands      []string          `json:"commands"`
+		StorageConfig *json.RawMessage  `json:"storageConfig"`
+		Destinations  []json.RawMessage `json:"destinations"`
+		LogLevel      string            `json:"logLevel"`
+		Schedule      *struct {
+			Enabled         bool     `json:"enabled"`
+			Days            []string `json:"days"`
+			Time            string   `json:"time"`
+			BlackoutEnabled bool     `json:"blackoutEnabled"`
+			BlackoutFrom    string   `json:"blackoutFrom"`
+			BlackoutTo      string   `json:"blackoutTo"`
+		} `json:"schedule"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&response); err == nil {
 		// Apply the portal's tier-effective log ship level (layer 1).
 		SetLogShipLevel(response.LogLevel)
+
+		// Persist the portal-defined schedule so the scheduler (and the manual
+		// blackout guard) pick it up on the next tick.
+		if sc := response.Schedule; sc != nil {
+			_ = database.SetConfig("sched_enabled", strconv.FormatBool(sc.Enabled))
+			_ = database.SetConfig("sched_days", strings.Join(sc.Days, ","))
+			_ = database.SetConfig("sched_time", sc.Time)
+			_ = database.SetConfig("sched_blackout_enabled", strconv.FormatBool(sc.BlackoutEnabled))
+			_ = database.SetConfig("sched_blackout_from", sc.BlackoutFrom)
+			_ = database.SetConfig("sched_blackout_to", sc.BlackoutTo)
+		}
 		for _, cmd := range response.Commands {
 			if cmd == "trigger_deep_scan" {
 				go GlobalDiscovery.TriggerDeepScan(context.Background())
@@ -506,7 +525,7 @@ func runShareDiscovery(cfg *config.Config, reqJSON string) {
 func listSharesNatively(host, username, password, domain string) ([]string, error) {
 	cmd := exec.Command("rclone", "lsd", "REMOTE:", "--config", "/dev/null")
 	cmd.Env = os.Environ()
-	
+
 	addEnv := func(key, value string) {
 		cmd.Env = append(cmd.Env, "RCLONE_CONFIG_REMOTE_"+key+"="+value)
 		cmd.Env = append(cmd.Env, "RCLONE_CONFIG_remote_"+key+"="+value)
@@ -574,7 +593,7 @@ func testWriteAccessNatively(host, username, password, domain, share string) boo
 		tempFile.Name(), "REMOTE:"+share+"/write_test.txt",
 	)
 	cmd.Env = os.Environ()
-	
+
 	addEnv := func(key, value string) {
 		cmd.Env = append(cmd.Env, "RCLONE_CONFIG_REMOTE_"+key+"="+value)
 		cmd.Env = append(cmd.Env, "RCLONE_CONFIG_remote_"+key+"="+value)

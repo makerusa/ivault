@@ -20,6 +20,7 @@ import (
 	"github.com/makerusa/ivault/internal/ingest"
 	"github.com/makerusa/ivault/internal/led"
 	"github.com/makerusa/ivault/internal/provision"
+	"github.com/makerusa/ivault/internal/schedule"
 	"github.com/makerusa/ivault/internal/state"
 	"github.com/makerusa/ivault/internal/upload"
 )
@@ -191,45 +192,34 @@ func main() {
 	signal.Notify(sigs, syscall.SIGTERM, syscall.SIGINT, syscall.SIGUSR1)
 	log.Println("Send SIGUSR1 to trigger maintenance: kill -USR1", os.Getpid())
 
-	// Automatic scheduler. "daily" ticks often but only acts inside the allowed
-	// window, once per day (so disconnects never interrupt a recording session);
-	// "interval" ticks at the configured interval, any time; "off" disables it.
-	// A nil channel simply never selects.
-	var scheduleC <-chan time.Time
-	lastDailyRun := ""
-	switch cfg.ScheduleMode {
-	case "interval":
-		if cfg.ScheduleIntervalMinutes > 0 {
-			t := time.NewTicker(time.Duration(cfg.ScheduleIntervalMinutes) * time.Minute)
-			defer t.Stop()
-			scheduleC = t.C
-			log.Printf("scheduler: interval mode — every %d minute(s)", cfg.ScheduleIntervalMinutes)
-		}
-	case "off":
-		log.Println("scheduler: off — manual sync only (SIGUSR1/portal)")
-	default: // "daily"
-		t := time.NewTicker(10 * time.Minute)
-		defer t.Stop()
-		scheduleC = t.C
-		log.Printf("scheduler: daily mode — one backup between %02d:00 and %02d:00",
-			cfg.ScheduleWindowStartHour, cfg.ScheduleWindowEndHour)
-	}
+	// Automatic scheduler. The schedule is portal-defined (delivered via the
+	// heartbeat, persisted in the config table) and re-read every tick so it can
+	// change at runtime: fire a sync at the configured time on the selected
+	// weekdays, and never during a blackout window. Manual triggers are also
+	// blocked during blackout. We tick every 30s and de-dupe by minute so a
+	// scheduled minute fires exactly once even if a tick lands slightly off.
+	scheduleTicker := time.NewTicker(30 * time.Second)
+	defer scheduleTicker.Stop()
+	lastFiredMinute := ""
+	log.Println("scheduler: portal-defined schedule (manual sync always available unless in a blackout window)")
 
 	for {
 		select {
-		case now := <-scheduleC:
-			// In daily mode, only fire inside the allowed window and at most
-			// once per calendar day. Interval mode fires on every tick.
-			if cfg.ScheduleMode != "interval" {
-				if !inScheduleWindow(now, cfg.ScheduleWindowStartHour, cfg.ScheduleWindowEndHour) {
-					continue
-				}
-				day := now.Format("2006-01-02")
-				if day == lastDailyRun {
-					continue
-				}
-				lastDailyRun = day
+		case now := <-scheduleTicker.C:
+			sch := schedule.Load(database)
+			if !sch.MatchesTime(now) {
+				continue
 			}
+			minute := now.Format("2006-01-02 15:04")
+			if minute == lastFiredMinute {
+				continue
+			}
+			if sch.InBlackout(now) {
+				log.Println("scheduler: scheduled time reached but inside a blackout window — skipping")
+				lastFiredMinute = minute
+				continue
+			}
+			lastFiredMinute = minute
 			log.Println("maintenance triggered by scheduler")
 			if fn := runMaintenance(ctx, sm, database, cfg, ingestCfg, uploadCfg, true); fn != nil {
 				holder.set(fn)
@@ -238,6 +228,12 @@ func main() {
 		case sig := <-sigs:
 			switch sig {
 			case syscall.SIGUSR1:
+				// Manual/portal-triggered sync — still refused during a blackout.
+				if schedule.Load(database).InBlackout(time.Now()) {
+					log.Println("manual sync requested but a blackout window is active — refused")
+					database.Log("warn", "scheduler", "manual sync refused: blackout window active")
+					continue
+				}
 				log.Println("maintenance triggered via signal")
 				// reattachAfter=true: manually triggered while plugged in
 				if fn := runMaintenance(ctx, sm, database, cfg, ingestCfg, uploadCfg, true); fn != nil {
@@ -359,7 +355,7 @@ func runMaintenance(
 			log.Println("ingest error:", err)
 			database.Log("warn", "ingest", fmt.Sprintf("ingest error: %v", err))
 		}
-		
+
 		if result == nil {
 			result = &ingest.IngestResult{}
 		}
@@ -448,7 +444,7 @@ func runMaintenance(
 				}
 
 				log.Println("starting upload...")
-				
+
 				// Fetch latest destinations from agent memory
 				rawDests := agent.GetActiveDestinations()
 				log.Printf("agent: fetching latest active destinations from agent memory to start upload: count=%d", len(rawDests))
