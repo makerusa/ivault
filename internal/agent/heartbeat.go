@@ -23,6 +23,7 @@ import (
 	"github.com/makerusa/ivault/internal/led"
 	"github.com/makerusa/ivault/internal/secret"
 	"github.com/makerusa/ivault/internal/state"
+	"github.com/makerusa/ivault/internal/tz"
 	"github.com/makerusa/ivault/internal/upload"
 )
 
@@ -155,30 +156,6 @@ var (
 	destSyncMu   sync.Mutex
 	lastDestJSON string
 )
-
-// applyTimezone persists the portal-supplied IANA timezone and, when it
-// changes, sets the system timezone so the device's wall-clock matches the
-// user's account. The schedule package evaluates times in this zone regardless,
-// so scheduling stays correct even if the timedatectl call is unavailable; the
-// system-level set just keeps `date`, logs, and the schedule aligned.
-func applyTimezone(database *db.DB, tz string) {
-	if _, err := time.LoadLocation(tz); err != nil {
-		log.Printf("agent: ignoring invalid timezone %q from portal: %v", tz, err)
-		return
-	}
-	prev, _ := database.GetConfig("sched_timezone")
-	if prev == tz {
-		return // unchanged — nothing to do
-	}
-	_ = database.SetConfig("sched_timezone", tz)
-	go func() {
-		if out, err := exec.Command("sudo", "timedatectl", "set-timezone", tz).CombinedOutput(); err != nil {
-			log.Printf("agent: timedatectl set-timezone %q failed: %v (%s)", tz, err, strings.TrimSpace(string(out)))
-		} else {
-			log.Printf("agent: system timezone set to %s", tz)
-		}
-	}()
-}
 
 // activeDestSummary is a secret-free view of a destination the device is using,
 // reported to the portal so the UI can match it to the configured destination
@@ -358,7 +335,7 @@ func sendHeartbeat(cfg *config.Config, sm *state.Machine, database *db.DB) {
 			_ = database.SetConfig("sched_blackout_from", sc.BlackoutFrom)
 			_ = database.SetConfig("sched_blackout_to", sc.BlackoutTo)
 			if sc.Timezone != "" {
-				applyTimezone(database, sc.Timezone)
+				tz.Apply(database, sc.Timezone)
 			}
 		}
 		for _, cmd := range response.Commands {

@@ -12,6 +12,10 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	// Embed the IANA timezone database in the binary so schedule evaluation and
+	// timedatectl-independent timezone handling work even on minimal images that
+	// ship without /usr/share/zoneinfo.
+	_ "time/tzdata"
 
 	"github.com/makerusa/ivault/internal/agent"
 	"github.com/makerusa/ivault/internal/config"
