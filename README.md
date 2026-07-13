@@ -5,9 +5,15 @@
 Relay turns a small RK35xx single-board computer into a headless USB storage
 appliance. Any device that records to USB — video mixers, cameras, audio
 recorders, medical equipment — sees Relay as an ordinary USB drive. Files are
-automatically ingested, checksum-verified, and uploaded to a configured cloud
-destination, with no manual intervention and only a brief (~2 s) interruption
-to the recording device.
+automatically ingested, checksum-verified, and archived to your destinations
+(SMB/NAS, Google Drive, or local storage), with no manual intervention and only
+a brief pause to the recording device.
+
+It exists to kill the manual "drive shuttle": format the drive in the recorder,
+record, unplug, carry it to a computer, copy the files off, carry it back, and
+repeat — a chain that breaks the moment a drive is left behind, lost in transit,
+or dropped between the people responsible. With Relay you record, and the
+footage is already where the next step needs it.
 
 > The Go module, systemd service, and on-disk paths use the internal name
 > `ivault` (e.g. `/etc/ivault`, `ivault.service`); the product is **MakerUSA
@@ -17,47 +23,65 @@ to the recording device.
 ## How it works
 
 ```
-[ Recording device ] ──USB-C──▶ [ RK35xx / Relay ] ──▶ [ Google Drive ]
+[ Recording device ] ──USB-C──▶ [ RK35xx / Relay ] ──▶ [ SMB/NAS · Google Drive · Local ]
 ```
 
 1. The recording device writes files to Relay as if it were a USB drive.
-2. On a schedule (within an allowed time window), or on manual/portal trigger,
-   Relay briefly takes the drive offline (~2 s).
+2. At the scheduled time (or on a manual/portal trigger), Relay briefly ejects
+   the drive's media — the gadget stays attached, so the host just sees the
+   media change.
 3. New files are copied to an upload queue with SHA-256 verification and
    recorded in SQLite.
-4. The virtual drive reattaches; the recorder keeps working.
-5. Files upload to the configured destination in the background.
+4. The media re-inserts; the recorder keeps working.
+5. Files upload to your primary destination in the background — rolling over to
+   a fallback destination if the primary is unreachable.
 
 ## Features
 
-- Presents as native USB mass storage to any host (exFAT "superfloppy" for
-  maximum recorder compatibility).
+- Presents as native USB mass storage to any host — a standard **GPT + exFAT**
+  volume, so it mounts cleanly on Windows, macOS, and recorders alike.
 - Automatic ingest with combined copy-and-verify (SHA-256) and dedup.
-- Upload to Google Drive via credentials pushed from the portal (SMB/local
-  scaffolding exists; Google Drive is the supported path).
-- **Window-aware scheduler** — daily within an allowed hour window (so a
-  disconnect never interrupts a recording session), interval, or off.
+- **Destinations: SMB/NAS, Google Drive, and local** — credentials pushed from
+  the portal. Set a **primary** with **automatic fallback**; each device
+  archives into its own per-device folder.
+- **File rules** — skip system files, ignore files under/over a size, and an
+  include/exclude extension filter (archive only, or all-but, certain types).
+- **Start-time scheduler** — sync at a chosen time on chosen weekdays, plus a
+  **blackout window** that blocks all syncing (even manual) during set hours.
+  Times are evaluated in your account timezone, which is pushed to the device.
 - **Space-based retention** (opt-in) — deletes only already-uploaded files when
   the drive crosses a threshold.
-- **Status LED** — slow pulse = not provisioned/not connected, rapid pulse =
-  provisioning, solid = provisioned and connected.
+- **Health monitoring** — per-NVMe temperature and wear, and clock/NTP status,
+  surfaced in the portal.
+- **Status LED** (on supported boards) — slow pulse = not provisioned/not
+  connected, rapid pulse = provisioning, solid = provisioned and connected.
 - **Portal heartbeat** — telemetry, device state, and a per-file manifest
   synced efficiently to the cloud portal (delta by content hash).
 - Cached credentials **encrypted at rest**; unique per-device USB serial.
 - Plug/unplug detection with debounce; graceful gadget teardown on shutdown;
   startup recovery of stuck states.
 
-## Supported hardware
+## Compatible hardware
 
 The installer detects the board; the USB OTG controller is auto-detected from
 `/sys/class/udc/`, so no per-board value is hardcoded.
 
-| Board | SoC | Notes |
-|-------|-----|-------|
-| Seeed reComputer RK3576 | RK3576 | SD boot, 1× NVMe, no eMMC. |
-| Radxa Rock 5T | RK3588 | eMMC + up to 2× NVMe. |
+**Tested:**
 
-Other RK35xx boards with a USB-C OTG (peripheral-capable) port should work.
+| Board | SoC | Status LED | Notes |
+|-------|-----|-----------|-------|
+| Seeed reComputer RK3576 | RK3576 | ✅ Supported | SD boot, 1× NVMe, no eMMC. |
+| Radxa Rock 5T | RK3588 | ❌ Not available | eMMC + up to 2× NVMe. No user-controllable LED exposed, so the LED feature is off here — everything else works. |
+
+**Should work (not yet tested):**
+
+- **Seeed reComputer RK3588** — same SoC as the tested Rock 5T; expected to work,
+  not yet verified.
+- Other RK35xx boards with a peripheral-capable USB-C OTG port.
+
+The only hard requirement is a USB-C OTG port that can run in peripheral
+(device) mode; the Status LED additionally needs a board-controllable LED under
+`/sys/class/leds`.
 
 ## Requirements
 
@@ -81,8 +105,8 @@ The installer:
 - **Detects your disks** (boot device, eMMC, NVMe) and never touches the disk
   you booted from.
 - **Chooses the external-drive backing** automatically — a whole dedicated NVMe
-  (exFAT superfloppy) when one is free, or an exFAT image on a shared single
-  NVMe. Either way the host sees a superfloppy.
+  when one is free, or an exFAT image on a shared single NVMe. Either way the
+  host sees a standard GPT-partitioned exFAT drive (mounts on Windows/macOS).
 - **Prompts only for real choices** (which NVMe, how much space) and confirms
   once before wiping anything.
 - **Auto-detects the USB OTG controller** and **neutralizes the vendor USB
@@ -155,7 +179,7 @@ port isn't detecting the cable. Work through, in order:
 
 ## Status LED
 
-Relay drives a board LED (default `user-led`, configurable) to reflect
+Relay can drive a board LED (default `user-led`, configurable) to reflect
 provisioning/connection status:
 
 | LED | Meaning |
@@ -163,6 +187,12 @@ provisioning/connection status:
 | Slow pulse (~3 s) | Not provisioned, or not connected to the portal |
 | Rapid pulse (~400 ms) | Provisioning in progress |
 | Solid | Provisioned and connected |
+
+**Requires board support.** The LED needs a user-controllable LED exposed under
+`/sys/class/leds`. This is board-dependent: the **Seeed reComputer RK3576**
+supports it; the **Radxa Rock 5T** exposes no controllable LED, so the LED
+feature is simply inactive there (set `led_enabled` to `false` to silence the
+startup log). Everything else is unaffected.
 
 ## Provisioning
 
@@ -183,11 +213,12 @@ directly.
 | `image_path` | `/nvme/usb_disk.img` | External-drive backing (image or `/dev/…`) |
 | `mount_point`, `upload_queue`, `db_path` | under `/nvme` | Internal storage |
 | `udc_name` | auto-detected | USB Device Controller |
-| `schedule_mode` | `daily` | `daily` \| `interval` \| `off` |
-| `schedule_window_start_hour` / `_end_hour` | `2` / `5` | Allowed window for `daily` |
-| `schedule_interval_minutes` | `60` | For `interval` mode |
 | `retention_enabled` / `retention_threshold_percent` | `false` / `80` | Space-based cleanup |
-| `led_enabled` / `led_name` | `true` / `user-led` | Status LED |
+| `led_enabled` / `led_name` | `true` / `user-led` | Status LED (board-dependent) |
+
+> **Scheduling, blackout windows, destinations, file rules, and timezone are
+> managed from the portal** and delivered to the device over the heartbeat — no
+> config-file editing required. (Older `schedule_*` config fields are ignored.)
 
 ## Storage layout
 
@@ -222,15 +253,19 @@ Trigger a maintenance cycle manually: `sudo kill -USR1 $(pgrep ivault)`.
 
 ## Roadmap
 
-- [x] Automatic scheduler (window-aware)
-- [x] Retention policy (space-based)
 - [x] Cloud management portal + provisioning
 - [x] Metrics / telemetry
 - [x] Installer script
-- [x] Status LED
-- [ ] Google Drive app-created-folder flow (least-privilege uploads)
-- [ ] SMB/NAS destination (finish + test)
+- [x] Status LED (board-dependent)
+- [x] Google Drive app-created-folder flow (least-privilege uploads)
+- [x] SMB/NAS destination
+- [x] Primary + automatic fallback destinations; per-device folders
+- [x] Start-time scheduler + blackout window + account timezone
+- [x] File rules (size + include/exclude extensions)
+- [x] Retention policy (space-based)
+- [x] NVMe and clock/NTP health monitoring
 - [ ] OTA firmware updates
+- [ ] Pre-built hardware
 
 ## License
 
