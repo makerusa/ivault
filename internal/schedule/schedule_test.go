@@ -75,3 +75,28 @@ func TestInBlackout(t *testing.T) {
 		t.Error("disabled blackout should not be active")
 	}
 }
+
+func TestTimezone(t *testing.T) {
+	// A schedule set for 03:00 in a UTC-5 zone should fire at 08:00 UTC, not
+	// 03:00 UTC — the wall-clock comparison happens in the configured zone.
+	s := Load(fakeDB{
+		"sched_enabled":  "true",
+		"sched_days":     "mon",
+		"sched_time":     "03:00",
+		"sched_timezone": "America/New_York", // EST = UTC-5 in January
+	})
+	// 2026-01-05 is a Monday. 08:00 UTC == 03:00 EST.
+	utc0800 := time.Date(2026, 1, 5, 8, 0, 0, 0, time.UTC)
+	if !s.MatchesTime(utc0800) {
+		t.Error("03:00 America/New_York schedule should match 08:00 UTC")
+	}
+	utc0300 := time.Date(2026, 1, 5, 3, 0, 0, 0, time.UTC)
+	if s.MatchesTime(utc0300) {
+		t.Error("should NOT match 03:00 UTC when the zone is America/New_York")
+	}
+
+	// An invalid/absent timezone falls back to UTC.
+	if loc := Load(fakeDB{"sched_timezone": "Nowhere/Bogus"}).loc(); loc != time.UTC {
+		t.Errorf("invalid timezone should fall back to UTC, got %v", loc)
+	}
+}

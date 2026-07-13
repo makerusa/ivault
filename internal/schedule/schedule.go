@@ -19,11 +19,12 @@ type DB interface {
 // Config-table keys the heartbeat persists.
 const (
 	keyEnabled         = "sched_enabled"
-	keyDays            = "sched_days"     // CSV of weekday abbrevs: sun,mon,tue,wed,thu,fri,sat
-	keyTime            = "sched_time"     // "HH:MM"
+	keyDays            = "sched_days" // CSV of weekday abbrevs: sun,mon,tue,wed,thu,fri,sat
+	keyTime            = "sched_time" // "HH:MM"
 	keyBlackoutEnabled = "sched_blackout_enabled"
 	keyBlackoutFrom    = "sched_blackout_from" // "HH:MM"
 	keyBlackoutTo      = "sched_blackout_to"   // "HH:MM"
+	keyTimezone        = "sched_timezone"      // IANA tz; times are evaluated here
 )
 
 // Schedule is the effective schedule + blackout for the device.
@@ -36,6 +37,13 @@ type Schedule struct {
 	BlackoutEnabled bool
 	BlackoutFrom    int // minutes since midnight
 	BlackoutTo      int // minutes since midnight
+
+	// Loc is the timezone the schedule is evaluated in (the user's account
+	// timezone, pushed by the portal). Times passed to MatchesTime/InBlackout
+	// are converted to this zone before the wall-clock comparison, so the
+	// schedule fires in the user's local time regardless of the system clock's
+	// zone. Defaults to UTC.
+	Loc *time.Location
 }
 
 var weekdayAbbr = map[string]time.Weekday{
@@ -46,7 +54,12 @@ var weekdayAbbr = map[string]time.Weekday{
 // Load reads the schedule from the config table. Missing/invalid values yield a
 // disabled schedule (manual-only), which is the safe default.
 func Load(db DB) Schedule {
-	s := Schedule{Days: map[time.Weekday]bool{}}
+	s := Schedule{Days: map[time.Weekday]bool{}, Loc: time.UTC}
+	if v, err := db.GetConfig(keyTimezone); err == nil && v != "" {
+		if loc, e := time.LoadLocation(v); e == nil {
+			s.Loc = loc
+		}
+	}
 	if v, err := db.GetConfig(keyEnabled); err == nil {
 		s.Enabled = v == "true" || v == "1"
 	}
@@ -81,6 +94,7 @@ func (s Schedule) MatchesTime(now time.Time) bool {
 	if !s.Enabled || len(s.Days) == 0 {
 		return false
 	}
+	now = now.In(s.loc())
 	if !s.Days[now.Weekday()] {
 		return false
 	}
@@ -94,12 +108,22 @@ func (s Schedule) InBlackout(now time.Time) bool {
 	if !s.BlackoutEnabled || s.BlackoutFrom == s.BlackoutTo {
 		return false
 	}
+	now = now.In(s.loc())
 	t := now.Hour()*60 + now.Minute()
 	if s.BlackoutFrom < s.BlackoutTo {
 		return t >= s.BlackoutFrom && t < s.BlackoutTo
 	}
 	// Wraps midnight.
 	return t >= s.BlackoutFrom || t < s.BlackoutTo
+}
+
+// loc returns the schedule's timezone, defaulting to UTC when unset (e.g. a
+// zero-value Schedule).
+func (s Schedule) loc() *time.Location {
+	if s.Loc == nil {
+		return time.UTC
+	}
+	return s.Loc
 }
 
 // parseHHMM parses "HH:MM"; invalid input yields 0,0.
