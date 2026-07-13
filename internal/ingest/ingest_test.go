@@ -95,9 +95,10 @@ func TestLoadFilters(t *testing.T) {
 	}
 	defer database.Close()
 
-	// Defaults when nothing has been synced: skip-system on, no size/ext limits.
+	// Defaults when nothing has been synced: skip-system on, no size/ext limits,
+	// exclude mode (blocklist).
 	f := loadFilters(database)
-	if !f.skipSystemFiles || f.minSizeBytes != 0 || f.maxSizeBytes != 0 || len(f.ignoredExts) != 0 {
+	if !f.skipSystemFiles || f.minSizeBytes != 0 || f.maxSizeBytes != 0 || len(f.exts) != 0 || f.extInclude {
 		t.Fatalf("unexpected defaults: %+v", f)
 	}
 
@@ -117,11 +118,17 @@ func TestLoadFilters(t *testing.T) {
 		t.Errorf("maxSizeBytes = %d, want %d", f.maxSizeBytes, 500*1024*1024)
 	}
 	for _, ext := range []string{"tmp", "log", "ds_store"} {
-		if !f.ignoredExts[ext] {
-			t.Errorf("extension %q should be ignored; got %+v", ext, f.ignoredExts)
+		if !f.exts[ext] {
+			t.Errorf("extension %q should be listed; got %+v", ext, f.exts)
 		}
 	}
-	if f.ignoredExts["mp4"] {
-		t.Error("extension mp4 should not be in the ignore list")
+	if f.exts["mp4"] {
+		t.Error("extension mp4 should not be in the list")
+	}
+
+	// Include mode flips the rule to an allowlist.
+	_ = database.SetConfig("filter_extension_mode", "include")
+	if f = loadFilters(database); !f.extInclude {
+		t.Error("extInclude should be true in include mode")
 	}
 }

@@ -378,6 +378,7 @@ func sendHeartbeat(cfg *config.Config, sm *state.Machine, database *db.DB) {
 			var sc struct {
 				SkipSystemFiles   *bool    `json:"skipSystemFiles"`
 				IgnoredExtensions []string `json:"ignoredExtensions"`
+				ExtensionMode     string   `json:"extensionMode"`
 				SkipFilesUnderMb  *float64 `json:"skipFilesUnderMb"`
 				SkipFilesOverMb   *float64 `json:"skipFilesOverMb"`
 			}
@@ -386,6 +387,11 @@ func sendHeartbeat(cfg *config.Config, sm *state.Machine, database *db.DB) {
 					_ = database.SetConfig("filter_skip_system_files", strconv.FormatBool(*sc.SkipSystemFiles))
 				}
 				_ = database.SetConfig("filter_ignored_extensions", strings.Join(sc.IgnoredExtensions, ","))
+				mode := sc.ExtensionMode
+				if mode != "include" {
+					mode = "exclude"
+				}
+				_ = database.SetConfig("filter_extension_mode", mode)
 				if sc.SkipFilesUnderMb != nil {
 					_ = database.SetConfig("filter_skip_files_under_mb", strconv.FormatFloat(*sc.SkipFilesUnderMb, 'f', -1, 64))
 				}
@@ -395,10 +401,12 @@ func sendHeartbeat(cfg *config.Config, sm *state.Machine, database *db.DB) {
 			}
 		}
 
-		if len(response.Destinations) > 0 {
-			// Only act when the destination set actually changed. The portal
-			// returns it on every heartbeat; re-applying + re-encrypting +
-			// re-writing it each time (and logging) is pure noise/churn.
+		{
+			// Reconcile to the portal's destination set on every heartbeat, but
+			// only re-apply/persist when it actually changed (the portal returns
+			// it each beat; re-encrypting + re-writing every time is pure churn).
+			// This runs even for an empty set so removing the last destination in
+			// the portal clears it here too, rather than leaving a stale copy.
 			cur, _ := json.Marshal(response.Destinations)
 			destSyncMu.Lock()
 			changed := string(cur) != lastDestJSON

@@ -123,7 +123,8 @@ type IngestResult struct {
 // system files.
 type ingestFilters struct {
 	skipSystemFiles bool
-	ignoredExts     map[string]bool // lowercased, no leading dot; extensions to ignore
+	exts            map[string]bool // lowercased, no leading dot; extensions the rule applies to
+	extInclude      bool            // true = archive ONLY exts (allowlist); false = archive all EXCEPT exts
 	minSizeBytes    int64           // ignore files smaller than this (0 = no floor)
 	maxSizeBytes    int64           // ignore files larger than this (0 = no cap)
 }
@@ -145,12 +146,15 @@ func loadFilters(database *db.DB) ingestFilters {
 			f.maxSizeBytes = int64(mb * 1024 * 1024)
 		}
 	}
+	if v, err := database.GetConfig("filter_extension_mode"); err == nil && v == "include" {
+		f.extInclude = true
+	}
 	if v, err := database.GetConfig("filter_ignored_extensions"); err == nil && v != "" {
-		f.ignoredExts = map[string]bool{}
+		f.exts = map[string]bool{}
 		for _, e := range strings.Split(v, ",") {
 			e = strings.ToLower(strings.TrimPrefix(strings.TrimSpace(e), "."))
 			if e != "" {
-				f.ignoredExts[e] = true
+				f.exts[e] = true
 			}
 		}
 	}
@@ -222,10 +226,13 @@ func Run(cfg IngestConfig, database *db.DB, sessionID int64) (*IngestResult, boo
 			return nil
 		}
 
-		// Ignored-extensions blocklist (empty = ignore nothing).
-		if len(filters.ignoredExts) > 0 {
+		// Extension rule (empty list = archive everything). In exclude mode the
+		// listed extensions are skipped; in include mode only the listed
+		// extensions are archived and everything else is skipped.
+		if len(filters.exts) > 0 {
 			ext := strings.ToLower(strings.TrimPrefix(filepath.Ext(relPath), "."))
-			if filters.ignoredExts[ext] {
+			listed := filters.exts[ext]
+			if (filters.extInclude && !listed) || (!filters.extInclude && listed) {
 				result.SkippedExtension++
 				return nil
 			}
