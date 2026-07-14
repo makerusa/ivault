@@ -137,8 +137,13 @@ func UploadAll(ctx context.Context, database *db.DB, cfg UploadConfig) ([]string
 		}
 		prepped[target.ID] = true
 		for _, dir := range uniqueDirs {
-			if err := createRemoteDir(ctx, dir, target, remoteName); err != nil {
-				log.Printf("agent: warning: failed to pre-create %s:%s: %v", remoteName, dir, err)
+			// Build the same fully-qualified path uploads use (share + subfolder
+			// for SMB, subfolder for local/FTP, bare for Drive) so the mkdir
+			// targets the real location — not a bare relative dir that SMB would
+			// misread as a (nonexistent) share name.
+			remotePath := remoteDst(target, dir)
+			if err := createRemoteDir(ctx, remotePath, target, remoteName); err != nil {
+				log.Printf("agent: warning: failed to pre-create %s: %v", remotePath, err)
 			}
 		}
 	}
@@ -360,10 +365,14 @@ func uploadFile(ctx context.Context, src, dst string, target Destination, remote
 	return nil
 }
 
-func createRemoteDir(ctx context.Context, dir string, target Destination, remoteName string) error {
+// createRemoteDir pre-creates a remote directory. remotePath is the fully
+// qualified rclone path (e.g. "REMOTE:share/subfolder/dir") built by the caller
+// with remoteDst, so mkdir targets exactly where files will be uploaded —
+// share and subfolder included for SMB, not a bare relative dir.
+func createRemoteDir(ctx context.Context, remotePath string, target Destination, remoteName string) error {
 	cmd := exec.CommandContext(ctx, "rclone", "mkdir",
 		"--config", "/dev/null",
-		fmt.Sprintf("%s:%s", remoteName, dir),
+		remotePath,
 	)
 	setupRCloneEnv(cmd, target, remoteName, false)
 	return cmd.Run()
