@@ -508,10 +508,11 @@ func runMaintenance(
 					usedSet := map[string]bool{}
 					for _, id := range usedDestIDs {
 						usedSet[id] = true
-						// Tell the portal this destination just took a real backup
-						// so its status reflects reality (reachable + last backup),
-						// not just whether a manual test was ever run.
-						agent.ReportUploadSuccess(cfg, id)
+						// Record that this destination just took a real backup. The
+						// timestamp rides the next heartbeat (the reliable, always-
+						// authenticated channel), which marks it reachable and stamps
+						// its last-backup time — no fragile fire-and-forget POST.
+						agent.RecordDestinationBackup(database, id)
 					}
 					// Label "last sync" with the highest-priority destination that
 					// actually took a backup (dests is in priority order).

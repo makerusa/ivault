@@ -161,9 +161,22 @@ var (
 // reported to the portal so the UI can match it to the configured destination
 // (by stable id) and show that it's been delivered to the device.
 type activeDestSummary struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
-	Type string `json:"type"`
+	ID           string `json:"id"`
+	Name         string `json:"name"`
+	Type         string `json:"type"`
+	LastBackupAt string `json:"lastBackupAt,omitempty"` // last successful upload to this destination (RFC3339)
+}
+
+// RecordDestinationBackup notes that a backup just succeeded to destID. The
+// timestamp is reported on the next heartbeat — the reliable, authenticated
+// channel — which is what marks the destination reachable and stamps its
+// last-backup time in the portal. This replaces a fire-and-forget POST that had
+// no retry: if a heartbeat is missed, the next one re-reports it.
+func RecordDestinationBackup(database *db.DB, destID string) {
+	if destID == "" {
+		return
+	}
+	_ = database.SetConfig("dest_backup_"+destID, time.Now().UTC().Format(time.RFC3339))
 }
 
 func sendHeartbeat(cfg *config.Config, sm *state.Machine, database *db.DB) {
@@ -242,7 +255,12 @@ func sendHeartbeat(cfg *config.Config, sm *state.Machine, database *db.DB) {
 			Type string `json:"type"`
 		}
 		if json.Unmarshal(raw, &d) == nil && (d.Name != "" || d.Type != "") {
-			activeDests = append(activeDests, activeDestSummary{ID: d.ID, Name: d.Name, Type: d.Type})
+			// Report the last successful-backup timestamp for this destination
+			// (persisted by RecordDestinationBackup after an upload cycle). The
+			// portal uses it to mark the destination reachable and stamp its
+			// last-backup time — no separate fire-and-forget POST needed.
+			lastBackup, _ := database.GetConfig("dest_backup_" + d.ID)
+			activeDests = append(activeDests, activeDestSummary{ID: d.ID, Name: d.Name, Type: d.Type, LastBackupAt: lastBackup})
 		}
 	}
 
@@ -477,19 +495,6 @@ func testDestination(cfg *config.Config, destID string, rawDests []json.RawMessa
 		log.Printf("agent: test destination %s (%s) FAILED: %v", destID, target.Type, err)
 	}
 	reportTestResult(cfg, destID, success, latency, err)
-}
-
-// ReportUploadSuccess tells the portal that a real backup just reached the
-// given destination. That's the strongest possible reachability signal, so it
-// marks the destination reachable and stamps its last-used time via the same
-// endpoint the manual test uses — this is what turns a working destination's
-// status from "Unknown" into "Reachable · Last backup <time>" without the user
-// ever running a manual test.
-func ReportUploadSuccess(cfg *config.Config, destID string) {
-	if destID == "" {
-		return
-	}
-	reportTestResult(cfg, destID, true, 0, nil)
 }
 
 func reportTestResult(cfg *config.Config, destID string, success bool, latency int64, dialErr error) {
