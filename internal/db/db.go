@@ -61,6 +61,11 @@ func migrate(conn *sql.DB) error {
 	if _, err := addColumnIfMissing(conn, "files", "upload_ms", "INTEGER"); err != nil {
 		return err
 	}
+
+	// Destination the file backed up to (name, for display in the portal).
+	if _, err := addColumnIfMissing(conn, "files", "destination_name", "TEXT"); err != nil {
+		return err
+	}
 	return nil
 }
 

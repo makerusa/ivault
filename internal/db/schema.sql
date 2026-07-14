@@ -28,6 +28,10 @@ CREATE TABLE IF NOT EXISTS files (
     deleted_at      DATETIME,
     upload_attempts INTEGER DEFAULT 0,
     destination_id  INTEGER,
+    -- Human-friendly name of the destination a file was backed up to (e.g.
+    -- "Studio NAS"), captured on the successful upload so the portal can show
+    -- not just that a file backed up but where.
+    destination_name TEXT,
     remote_path     TEXT,
     error_message   TEXT,
     -- Transfer timing (milliseconds): local ingest copy (external drive ->

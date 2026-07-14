@@ -119,16 +119,16 @@ func (d *DB) UpdateFileError(id int64, msg string) error {
 	return err
 }
 
-func (d *DB) UpdateFileUploaded(id int64, destID int64, remotePath string) error {
+func (d *DB) UpdateFileUploaded(id int64, destName, remotePath string) error {
 	_, err := d.conn.Exec(`
 		UPDATE files SET
 			state = ?,
 			uploaded_at = CURRENT_TIMESTAMP,
 			updated_at = strftime('%Y-%m-%d %H:%M:%f','now'),
-			destination_id = ?,
+			destination_name = ?,
 			remote_path = ?
 		WHERE id = ?`,
-		FileUploaded, destID, remotePath, id,
+		FileUploaded, destName, remotePath, id,
 	)
 	return err
 }
@@ -176,6 +176,7 @@ type FileChange struct {
 	UpdatedAt      string `json:"updatedAt"`
 	IngestMs       *int64 `json:"ingestMs,omitempty"`
 	UploadMs       *int64 `json:"uploadMs,omitempty"`
+	Destination    string `json:"dest,omitempty"` // name of the destination this file backed up to
 }
 
 // GetFilesChangedSince returns files whose updated_at is strictly greater than
@@ -186,7 +187,7 @@ func (d *DB) GetFilesChangedSince(watermark string, limit int) ([]FileChange, er
 		SELECT checksum_sha256, filename, size_bytes, state, upload_attempts,
 		       COALESCE(error_message, ''), COALESCE(discovered_at, ''),
 		       COALESCE(uploaded_at, ''), COALESCE(updated_at, ''),
-		       ingest_ms, upload_ms
+		       ingest_ms, upload_ms, COALESCE(destination_name, '')
 		FROM files
 		WHERE updated_at > ?
 		ORDER BY updated_at ASC
@@ -203,7 +204,7 @@ func (d *DB) GetFilesChangedSince(watermark string, limit int) ([]FileChange, er
 		var ingestMs, uploadMs sql.NullInt64
 		if err := rows.Scan(&c.Checksum, &c.Filename, &c.SizeBytes, &c.State,
 			&c.UploadAttempts, &c.ErrorMessage, &c.DiscoveredAt,
-			&c.UploadedAt, &c.UpdatedAt, &ingestMs, &uploadMs); err != nil {
+			&c.UploadedAt, &c.UpdatedAt, &ingestMs, &uploadMs, &c.Destination); err != nil {
 			continue
 		}
 		if ingestMs.Valid {

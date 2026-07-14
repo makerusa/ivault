@@ -239,7 +239,13 @@ func UploadAll(ctx context.Context, database *db.DB, cfg UploadConfig) ([]string
 				return nil
 			}
 
-			database.UpdateFileUploaded(f.ID, 0, remoteDst(*uploadedTo, rel))
+			// Record the human-friendly destination name (falling back to type)
+			// so the portal can show where each file backed up.
+			destName := uploadedTo.Name
+			if destName == "" {
+				destName = uploadedTo.Type
+			}
+			database.UpdateFileUploaded(f.ID, destName, remoteDst(*uploadedTo, rel))
 			_ = database.SetFileUploadMs(f.ID, uploadMs)
 			os.Remove(src)
 
