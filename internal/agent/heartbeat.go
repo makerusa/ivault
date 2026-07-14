@@ -513,6 +513,7 @@ func reportTestResult(cfg *config.Config, destID string, success bool, latency i
 
 	req, _ := http.NewRequest("POST", url, bytes.NewBuffer(body))
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-User-ID", cfg.UserID)
 	req.Header.Set("X-Device-Key", cfg.DeviceAPIKey)
 
 	client := &http.Client{Timeout: 5 * time.Second}
